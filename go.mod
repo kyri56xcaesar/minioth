@@ -1,4 +1,4 @@
-module kyri56xcaesar.com/moth
+module kyri56xcaesar.com/minioth
 
 go 1.23.3
 
