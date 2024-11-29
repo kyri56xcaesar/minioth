@@ -1,4 +1,4 @@
-module kyri56xcaesar.com/minioth
+module kyri56xcaesar/minioth
 
 go 1.23.3
 
