@@ -1,4 +1,4 @@
-module kyri56xcaesar/minioth
+module github.com/kyri56xcaesar/minioth
 
 go 1.23.3
 
