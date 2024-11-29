@@ -9,12 +9,11 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
-	"kyri56xcaesar/discord_bots_app/internal/serverconfig"
 )
 
 type MService struct {
 	Engine  *gin.Engine
-	Config  *serverconfig.EnvConfig
+	Config  *EnvConfig
 	Minioth *Minioth
 }
 
@@ -25,7 +24,7 @@ const (
 )
 
 func NewMSerivce(m *Minioth, conf string) MService {
-	cfg := serverconfig.LoadConfig(conf)
+	cfg := LoadConfig(conf)
 
 	srv := MService{
 		Minioth: m,
