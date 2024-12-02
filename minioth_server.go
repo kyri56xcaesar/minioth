@@ -23,6 +23,11 @@ const (
 	DEFAULT_audit_log_path string = "data/minioth.log"
 )
 
+type UserClaim struct {
+	pass Password
+	user User
+}
+
 func NewMSerivce(m *Minioth, conf string) MService {
 	cfg := LoadConfig(conf)
 
@@ -50,6 +55,18 @@ func (srv *MService) ServeHTTP() {
 		})
 
 		apiV1.POST("/register", func(c *gin.Context) {
+			var uclaim UserClaim
+			err := c.Bind(&uclaim)
+			if err != nil {
+				log.Printf("error binding request body to struct: %v", err)
+				c.Error(err)
+				return
+			}
+			log.Printf("%+v", uclaim)
+			c.JSON(200, gin.H{
+				"username": uclaim.user.Name,
+				"password": uclaim.pass.Hashpass,
+			})
 		})
 
 		apiV1.POST("/logout", func(c *gin.Context) {
@@ -69,13 +86,13 @@ func (srv *MService) ServeHTTP() {
 		admin.GET("/audit/logs", func(c *gin.Context) {
 		})
 
-		admin.GET("/admin/users", func(c *gin.Context) {
+		admin.GET("/users", func(c *gin.Context) {
 			c.JSON(http.StatusOK, gin.H{
 				"content": minioth.Select("users"),
 			})
 		})
 
-		admin.GET("/admin/groups", func(c *gin.Context) {
+		admin.GET("/groups", func(c *gin.Context) {
 			c.JSON(http.StatusOK, gin.H{
 				"content": minioth.Select("groups"),
 			})

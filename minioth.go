@@ -38,29 +38,29 @@ type userspace interface {
 }
 
 type User struct {
-	Name     string
-	Info     string
-	Home     string
-	Shell    string
+	Name     string `json:"username" form:"username"`
+	Info     string `json:"info" form:"info"`
+	Home     string `json:"home" form:"home"`
+	Shell    string `json:"shell" form:"shell"`
 	Password Password
-	Uid      int
-	Pgroup   int
+	Uid      int `json:"uid"`
+	Pgroup   int `json:"pgroup"`
 }
 type Password struct {
-	Hashpass           string
-	LastPasswordChange string
-	MinPasswordAge     string
-	MaxPasswordAge     string
-	WarningPeriod      string
-	InactivityPeriod   string
-	ExpirationDate     string
-	Length             int
+	Hashpass           string `json:"hashpass"`
+	LastPasswordChange string `json:"lpasschange"`
+	MinPasswordAge     string `json:"minpassage"`
+	MaxPasswordAge     string `json:"maxpassage"`
+	WarningPeriod      string `json:"warningperiod"`
+	InactivityPeriod   string `json:"incativityperiod"`
+	ExpirationDate     string `json:"expirationdate"`
+	Length             int    `json:"passlength"`
 }
 type Group struct {
-	Name     string
+	Name     string `json:"groupname" form:"groupname"`
 	Password Password
 	Users    []User
-	Gid      int64
+	Gid      int64 `json:"gid" form:"gid"`
 }
 
 func Hash(password []byte) ([]byte, error) {

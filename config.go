@@ -34,7 +34,7 @@ func LoadConfig(path string) *EnvConfig {
 		ConfigPath:     split[len(split)-1],
 		CertFile:       getEnv("CERTFILE", "f4k3"),
 		KeyFile:        getEnv("KEYFILE", "f4k3"),
-		HTTPPort:       getEnv("HTTP_PORT", "80"),
+		HTTPPort:       getEnv("HTTP_PORT", "9090"),
 		HTTPSPort:      getEnv("HTTPS_PORT", "443"),
 		IP:             getEnv("IP", "localhost"),
 		DBfile:         getEnv("DB_NAME", "data/database.db"),
