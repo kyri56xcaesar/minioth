@@ -2,6 +2,8 @@ package minioth
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"log"
 	"net/http"
 	"os/signal"
@@ -24,8 +26,48 @@ const (
 )
 
 type UserClaim struct {
-	pass Password
-	user User
+	User User `json:"user"`
+}
+
+func offLimits(str string) bool {
+	if str == "root" || str == "kubernetes" {
+		return true
+	}
+	return false
+}
+
+func (u *UserClaim) validateUser() error {
+	if u.User.Name == "" {
+		return errors.New("username cannot be empty")
+	}
+
+	if offLimits(u.User.Name) {
+		return errors.New("username off limits")
+	}
+
+	if !IsAlphanumericPlus(u.User.Name) {
+		return fmt.Errorf("username %q is invalid: only alphanumeric characters[@+] are allowed", u.User.Name)
+	}
+
+	if len(u.User.Info) > 100 {
+		return fmt.Errorf("info field is too long: maximum allowed length is 100 characters")
+	}
+
+	// Validate UID
+	if u.User.Uid < 0 {
+		return fmt.Errorf("uid '%d' is invalid: must be a non-negative integer", u.User.Uid)
+	}
+
+	// Validate Primary Group
+	if u.User.Pgroup < 0 {
+		return fmt.Errorf("primary group '%d' is invalid: must be a non-negative integer", u.User.Pgroup)
+	}
+
+	if err := u.User.Password.validatePassword(); err != nil {
+		return fmt.Errorf("password validation error: %w", err)
+	}
+
+	return nil
 }
 
 func NewMSerivce(m *Minioth, conf string) MService {
@@ -62,11 +104,30 @@ func (srv *MService) ServeHTTP() {
 				c.Error(err)
 				return
 			}
-			log.Printf("%+v", uclaim)
+			// Verify user credentials
+			err = uclaim.validateUser()
+			if err != nil {
+				log.Printf("failed to validate: %v", err)
+				c.JSON(400, gin.H{
+					"error": err.Error(),
+				})
+				return
+			}
+			// Check for uniquness
+			err = checkIfUserExists(uclaim.User)
+			if err != nil {
+				log.Printf("failed checking for uniqueness...: %v", err)
+				c.JSON(500, gin.H{
+					"error": err.Error(),
+				})
+				return
+			}
+			// Proceed with Registration
 			c.JSON(200, gin.H{
-				"username": uclaim.user.Name,
-				"password": uclaim.pass.Hashpass,
+				"username": uclaim.User.Name,
+				"password": uclaim.User.Password.Hashpass,
 			})
+
 		})
 
 		apiV1.POST("/logout", func(c *gin.Context) {

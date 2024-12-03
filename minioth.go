@@ -2,6 +2,7 @@ package minioth
 
 import (
 	"bufio"
+	"errors"
 	"fmt"
 	"log"
 	"os"
@@ -38,13 +39,13 @@ type userspace interface {
 }
 
 type User struct {
-	Name     string `json:"username" form:"username"`
-	Info     string `json:"info" form:"info"`
-	Home     string `json:"home" form:"home"`
-	Shell    string `json:"shell" form:"shell"`
-	Password Password
-	Uid      int `json:"uid"`
-	Pgroup   int `json:"pgroup"`
+	Name     string   `json:"username" form:"username"`
+	Info     string   `json:"info" form:"info"`
+	Home     string   `json:"home" form:"home"`
+	Shell    string   `json:"shell" form:"shell"`
+	Password Password `json:"password"`
+	Uid      int      `json:"uid"`
+	Pgroup   int      `json:"pgroup"`
 }
 type Password struct {
 	Hashpass           string `json:"hashpass"`
@@ -52,7 +53,7 @@ type Password struct {
 	MinPasswordAge     string `json:"minpassage"`
 	MaxPasswordAge     string `json:"maxpassage"`
 	WarningPeriod      string `json:"warningperiod"`
-	InactivityPeriod   string `json:"incativityperiod"`
+	InactivityPeriod   string `json:"inactivityperiod"`
 	ExpirationDate     string `json:"expirationdate"`
 	Length             int    `json:"passlength"`
 }
@@ -109,8 +110,17 @@ func NewMinioth(rootname string, useDb bool, dbPath string) Minioth {
 
 func (m *Minioth) init() {
 	log.Print("Initializing minioth")
+
+	_, err := os.Stat("data")
+	if err != nil {
+		log.Printf("error stating data dir: %v", err)
+		err = os.Mkdir("data", 0700)
+		if err != nil {
+			panic("failed to make new directory.")
+		}
+	}
 	// Reset file
-	err := os.Remove(MINIOTH_PASSWD)
+	err = os.Remove(MINIOTH_PASSWD)
 	if err != nil {
 		log.Print(err)
 	}
@@ -346,5 +356,76 @@ func (m *Minioth) groupmod(groupname, password string, usernames []string) error
 }
 
 func (m *Minioth) passwd(username, password string) error {
+	return nil
+}
+
+func (p *Password) validatePassword() error {
+	// Validate Password Length
+	if p.Length < 8 {
+		return fmt.Errorf("password length '%d' is too short: minimum required length is 8 characters", p.Length)
+	}
+
+	// Validate Hashpass
+	if p.Hashpass == "" {
+		return errors.New("hashpass cannot be empty")
+	}
+
+	// Validate Last Password Change
+	if p.LastPasswordChange == "" {
+		return errors.New("last password change date cannot be empty")
+	}
+
+	// Validate Min Password Age
+	if p.MinPasswordAge == "" {
+		return errors.New("minimum password age cannot be empty")
+	}
+
+	// Validate Max Password Age
+	if p.MaxPasswordAge == "" {
+		return errors.New("maximum password age cannot be empty")
+	}
+
+	// Validate Warning Period
+	if p.WarningPeriod == "" {
+		return errors.New("warning period cannot be empty")
+	}
+
+	// Validate Inactivity Period
+	if p.InactivityPeriod == "" {
+		return errors.New("inactivity period cannot be empty")
+	}
+
+	// Validate Expiration Date
+	if p.ExpirationDate == "" {
+		return errors.New("expiration date cannot be empty")
+	}
+
+	return nil
+}
+
+func checkIfUserExists(u User) error {
+	log.Printf("Checking if name:%s, already exists...", u.Name)
+	var users []string
+
+	data, err := os.ReadFile(MINIOTH_PASSWD)
+	if err != nil {
+		log.Printf("error opening file: %v", err)
+		return err
+	}
+	users = strings.Split(string(data), "\n")
+
+	for _, line := range users {
+		parts := strings.SplitN(line, ":", 4)
+		if len(parts) != 4 {
+			break
+		}
+		username := parts[0]
+		// compare username
+		if u.Name == username {
+			log.Printf("user %s already exists.", username)
+			return errors.New("user already exists.")
+		}
+	}
+
 	return nil
 }
