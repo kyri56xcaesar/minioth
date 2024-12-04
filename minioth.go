@@ -274,21 +274,21 @@ func (m *Minioth) Useradd(user User) error {
 	return nil
 }
 
-/* approval of minioth means, user exists and password is valid */
-func (m *Minioth) approveUser(username, password string) bool {
+/* approval of minioth means, user exists and password is valid, returns user uid if success -1 otherwise */
+func (m *Minioth) approveUser(username, password string) (bool, int) {
 	log.Printf("approving user... %q:%q", username, password)
 
 	file, err := os.Open(MINIOTH_PASSWD)
 	if err != nil {
 		log.Printf("failed to open file: %v", err)
-		return false
+		return false, -1
 	}
 	defer file.Close()
 
 	pfile, err := os.Open(MINIOTH_SHADOW)
 	if err != nil {
 		log.Printf("failed to open file: %v", err)
-		return false
+		return false, -1
 	}
 	defer pfile.Close()
 
@@ -296,22 +296,28 @@ func (m *Minioth) approveUser(username, password string) bool {
 	userline, line, err := search(username, file)
 	if err != nil || line == -1 {
 		log.Printf("failed to search for user: %v", err)
-		return false
+		return false, -1
 	}
+
 	log.Print(userline)
+	uid, err := strconv.Atoi(strings.SplitN(userline, DEL, 4)[2])
+	if err != nil {
+		log.Printf("failed to retrieve user uid: %v", err)
+		return false, -1
+	}
 
 	log.Print("searching for password entry...")
 	passline, pline, err := search(username, pfile)
 	if err != nil || pline == -1 {
 		log.Printf("failed to search for pass: %v", err)
-		return false
+		return false, -1
 	}
 
 	// log.Printf("userentry: %s, passwordentry: %s", userline, passline)
 
 	hashpass := strings.SplitN(passline, DEL, 3)[1]
 
-	return verifyPass([]byte(hashpass), []byte(password))
+	return verifyPass([]byte(hashpass), []byte(password)), uid
 }
 
 /* check if a user is already here. Error nil if not*/
@@ -487,36 +493,6 @@ func (p *Password) validatePassword() error {
 	// Validate Hashpass
 	if p.Hashpass == "" {
 		return errors.New("hashpass cannot be empty")
-	}
-
-	// Validate Last Password Change
-	if p.LastPasswordChange == "" {
-		return errors.New("last password change date cannot be empty")
-	}
-
-	// Validate Min Password Age
-	if p.MinPasswordAge == "" {
-		return errors.New("minimum password age cannot be empty")
-	}
-
-	// Validate Max Password Age
-	if p.MaxPasswordAge == "" {
-		return errors.New("maximum password age cannot be empty")
-	}
-
-	// Validate Warning Period
-	if p.WarningPeriod == "" {
-		return errors.New("warning period cannot be empty")
-	}
-
-	// Validate Inactivity Period
-	if p.InactivityPeriod == "" {
-		return errors.New("inactivity period cannot be empty")
-	}
-
-	// Validate Expiration Date
-	if p.ExpirationDate == "" {
-		return errors.New("expiration date cannot be empty")
 	}
 
 	return nil

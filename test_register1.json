@@ -1,0 +1,20 @@
+{
+  "user":{
+    "username":"koularos",
+    "info":"kchalv@minioth.com",
+    "home":"russia",
+    "shell":"gshell",
+    "password":{
+      "hashpass":"koularos",
+      "lastPasswordChange":"",
+      "minimumPasswordAge":"",
+      "maximumPasswordAge":"",
+      "warningPeriod":"",
+      "inacticityPeriod":"",
+      "expirationDate":"",
+      "passwordLength":10
+    },
+    "uid":0,
+    "pgroup":0
+  }
+}

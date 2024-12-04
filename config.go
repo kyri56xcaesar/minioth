@@ -18,6 +18,8 @@ type EnvConfig struct {
 	HTTPSPort      string
 	IP             string
 	DBfile         string
+	JWTSecretKey   []byte
+	JWTRefreshKey  []byte
 	AllowedOrigins []string
 	AllowedHeaders []string
 	AllowedMethods []string
@@ -41,9 +43,19 @@ func LoadConfig(path string) *EnvConfig {
 		AllowedOrigins: getEnvs("ALLOWED_ORIGINS", []string{"None"}),
 		AllowedHeaders: getEnvs("ALLOWED_HEADERS", nil),
 		AllowedMethods: getEnvs("ALLOWED_METHODS", nil),
+		JWTSecretKey:   getJWTSecretKey("JWT_SECRET_KEY"),
+		JWTRefreshKey:  getJWTSecretKey("JWT_REFRESH_KEY"),
 	}
 
 	return config
+}
+
+func getJWTSecretKey(envVar string) []byte {
+	secret := os.Getenv(envVar)
+	if secret == "" {
+		log.Fatalf("%s must not be empty", secret)
+	}
+	return []byte(secret)
 }
 
 func getEnv(key, fallback string) string {
