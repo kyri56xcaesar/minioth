@@ -368,6 +368,59 @@ func (srv *MService) ServeHTTP() {
 			})
 		})
 
+		apiV1.GET("/user/me", func(c *gin.Context) {
+			authHeader := c.GetHeader("Authorization")
+			if authHeader == "" {
+				c.JSON(http.StatusUnauthorized, gin.H{"error": "Authorization header is required"})
+				c.Abort()
+				return
+			}
+			log.Printf("auth_header: %s", authHeader)
+			// Extract the token from the Authorization header
+			tokenString := authHeader[len("Bearer "):]
+			if tokenString == "" {
+				c.JSON(http.StatusUnauthorized, gin.H{"error": "Bearer token is required"})
+				c.Abort()
+				return
+			}
+
+			// Parse and validate the token
+			token, err := jwt.ParseWithClaims(tokenString, &CustomClaims{}, func(token *jwt.Token) (interface{}, error) {
+				if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
+					return nil, fmt.Errorf("unexpected signing method: %v", token.Header["alg"])
+				}
+				return jwtSecretKey, nil
+			})
+
+			if err != nil || !token.Valid {
+				token, err = jwt.ParseWithClaims(tokenString, &CustomClaims{}, func(token *jwt.Token) (interface{}, error) {
+					if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
+						return nil, fmt.Errorf("unexpected signing method: %v", token.Header["alg"])
+					}
+					return jwtRefreshKey, nil
+				})
+			}
+
+			log.Print(token)
+
+			claims, ok := token.Claims.(*CustomClaims)
+			if !ok {
+				log.Printf("not okay when retrieving claims")
+				return
+			}
+
+			response := make(map[string]string)
+			response["valid"] = strconv.FormatBool(token.Valid)
+			response["user"] = claims.UserID
+			response["role"] = claims.Role
+			response["issued_at"] = claims.IssuedAt.String()
+			response["expires_at"] = claims.ExpiresAt.String()
+
+			c.JSON(http.StatusOK, gin.H{
+				"info": response,
+			})
+		})
+
 		apiV1.POST("/user/me", func(c *gin.Context) {
 			log.Printf("%v request at %v.", c.Request.Method, c.Request.URL)
 			var reqBody struct {
