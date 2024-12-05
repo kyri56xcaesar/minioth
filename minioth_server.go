@@ -375,7 +375,6 @@ func (srv *MService) ServeHTTP() {
 				c.Abort()
 				return
 			}
-			log.Printf("auth_header: %s", authHeader)
 			// Extract the token from the Authorization header
 			tokenString := authHeader[len("Bearer "):]
 			if tokenString == "" {
@@ -401,7 +400,14 @@ func (srv *MService) ServeHTTP() {
 				})
 			}
 
-			log.Print(token)
+			if err != nil {
+				log.Printf("%v token, exiting", token)
+				c.JSON(http.StatusBadRequest, gin.H{
+					"error": "bad token",
+				})
+				c.Abort()
+				return
+			}
 
 			claims, ok := token.Claims.(*CustomClaims)
 			if !ok {
@@ -454,8 +460,6 @@ func (srv *MService) ServeHTTP() {
 					return jwtRefreshKey, nil
 				})
 			}
-
-			log.Print(token)
 
 			claims, ok := token.Claims.(*CustomClaims)
 			if !ok {
