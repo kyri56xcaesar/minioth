@@ -189,7 +189,7 @@ func (srv *MService) ServeHTTP() {
 			c.JSON(200, gin.H{
 				"username":      lclaim.Username,
 				"groups":        strGroups,
-				"acces_token":   token,
+				"access_token":  token,
 				"refresh_token": refreshToken,
 			})
 		})
