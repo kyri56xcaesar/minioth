@@ -6,4 +6,8 @@ a basic auth service,
 JWT tokens,
 unix style
 
-perhaps use sqlite (?)
+
+supports plain texts or duckdb
+
+currently working:
+basic login, register
