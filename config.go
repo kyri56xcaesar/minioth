@@ -5,6 +5,7 @@ import (
 	"log"
 	"os"
 	"reflect"
+	"strconv"
 	"strings"
 
 	"github.com/joho/godotenv"
@@ -23,6 +24,7 @@ type EnvConfig struct {
 	AllowedOrigins []string
 	AllowedHeaders []string
 	AllowedMethods []string
+	HashCost       int
 }
 
 func LoadConfig(path string) *EnvConfig {
@@ -31,6 +33,15 @@ func LoadConfig(path string) *EnvConfig {
 	}
 
 	split := strings.Split(path, "/")
+
+	hashcost, err := strconv.Atoi(getEnv("HASH_COST", "16"))
+	if err != nil {
+		log.Print("failed to atoi hascost, setting default...")
+		hashcost = 16
+	} else if hashcost < 0 || hashcost > 30 {
+		log.Print("invalid hashcost value, setting default...")
+		hashcost = 16
+	}
 
 	config := &EnvConfig{
 		ConfigPath:     split[len(split)-1],
@@ -45,6 +56,7 @@ func LoadConfig(path string) *EnvConfig {
 		AllowedMethods: getEnvs("ALLOWED_METHODS", nil),
 		JWTSecretKey:   getJWTSecretKey("JWT_SECRET_KEY"),
 		JWTRefreshKey:  getJWTSecretKey("JWT_REFRESH_KEY"),
+		HashCost:       hashcost,
 	}
 
 	return config

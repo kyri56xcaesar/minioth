@@ -72,8 +72,10 @@ func NewMSerivce(m *Minioth, conf string) MService {
 	}
 	jwtSecretKey = cfg.JWTSecretKey
 	jwtRefreshKey = cfg.JWTRefreshKey
+	HASH_COST = cfg.HashCost
 	log.Printf("updating jwt key...: %s", jwtSecretKey)
 	log.Printf("updating jwt refresh key...: %s", jwtRefreshKey)
+	log.Printf("setting hashcost to : HASH_COST=%v", HASH_COST)
 	handler = m.handler
 
 	return srv

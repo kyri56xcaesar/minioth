@@ -19,9 +19,7 @@ import (
 *
  */
 
-const (
-	HASH_COST int = 16
-)
+var HASH_COST int = 16
 
 type MiniothHandler interface {
 	Init()
