@@ -28,6 +28,7 @@ const (
 *
 * Variables */
 var (
+	handler       MiniothHandler
 	jwtSecretKey  = []byte("default_placeholder_key")
 	jwtRefreshKey = []byte("default_refresh_placeholder_key")
 )
@@ -59,63 +60,6 @@ type CustomClaims struct {
 /*
 *
 * Functions and methods */
-func offLimits(str string) bool {
-	if str == "root" || str == "kubernetes" {
-		return true
-	}
-	return false
-}
-
-func (l *LoginClaim) validateClaim() error {
-	if l.Username == "" {
-		return errors.New("username cannot be empty")
-	}
-
-	if !IsAlphanumericPlus(l.Username) {
-		return fmt.Errorf("username %q is invalid: only alphanumeric chararctes[@+] are allowed", l.Username)
-	}
-
-	if l.Password == "" {
-		return errors.New("password cannot be empty")
-	}
-
-	return nil
-}
-
-func (u *RegisterClaim) validateUser() error {
-	if u.User.Name == "" {
-		return errors.New("username cannot be empty")
-	}
-
-	if offLimits(u.User.Name) {
-		return errors.New("username off limits")
-	}
-
-	if !IsAlphanumericPlus(u.User.Name) {
-		return fmt.Errorf("username %q is invalid: only alphanumeric characters[@+] are allowed", u.User.Name)
-	}
-
-	if len(u.User.Info) > 100 {
-		return fmt.Errorf("info field is too long: maximum allowed length is 100 characters")
-	}
-
-	// Validate UID
-	if u.User.Uid < 0 {
-		return fmt.Errorf("uid '%d' is invalid: must be a non-negative integer", u.User.Uid)
-	}
-
-	// Validate Primary Group
-	if u.User.Pgroup < 0 {
-		return fmt.Errorf("primary group '%d' is invalid: must be a non-negative integer", u.User.Pgroup)
-	}
-
-	if err := u.User.Password.validatePassword(); err != nil {
-		return fmt.Errorf("password validation error: %w", err)
-	}
-
-	return nil
-}
-
 func NewMSerivce(m *Minioth, conf string) MService {
 	cfg := LoadConfig(conf)
 	log.Print(cfg.ToString())
@@ -125,73 +69,21 @@ func NewMSerivce(m *Minioth, conf string) MService {
 		Engine:  gin.Default(),
 		Config:  cfg,
 	}
-
 	jwtSecretKey = cfg.JWTSecretKey
 	jwtRefreshKey = cfg.JWTRefreshKey
 	log.Printf("updating jwt key...: %s", jwtSecretKey)
 	log.Printf("updating jwt refresh key...: %s", jwtRefreshKey)
+	handler = m.handler
+
 	return srv
 }
 
-/* For this service, authorization is required only for admin role. */
-func AuthMiddleware(role string) gin.HandlerFunc {
-	return func(c *gin.Context) {
-		authHeader := c.GetHeader("Authorization")
-		if authHeader == "" {
-			c.JSON(http.StatusUnauthorized, gin.H{"error": "Authorization header is required"})
-			c.Abort()
-			return
-		}
-
-		log.Printf("auth_header: %s", authHeader)
-
-		// Extract the token from the Authorization header
-		tokenString := authHeader[len("Bearer "):]
-		if tokenString == "" {
-			c.JSON(http.StatusUnauthorized, gin.H{"error": "Bearer token is required"})
-			c.Abort()
-			return
-		}
-
-		log.Printf("bearer token: %s", tokenString)
-
-		// Parse and validate the token
-		token, err := jwt.ParseWithClaims(tokenString, &CustomClaims{}, func(token *jwt.Token) (interface{}, error) {
-			if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
-				return nil, fmt.Errorf("unexpected signing method: %v", token.Header["alg"])
-			}
-			return jwtSecretKey, nil
-		})
-
-		log.Print(token)
-
-		if err != nil || !token.Valid {
-			c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid token"})
-			c.Abort()
-			return
-		}
-
-		// Set claims in the context for further use
-		if claims, ok := token.Claims.(*CustomClaims); ok {
-			if claims.Role != role {
-				c.JSON(http.StatusUnauthorized, gin.H{
-					"error": "invalid user",
-				})
-				c.Abort()
-				return
-			}
-			c.Set("username", claims.UserID)
-			c.Set("role", claims.Role)
-		} else {
-			c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid token claims"})
-			c.Abort()
-			return
-		}
-
-		c.Next()
-	}
-}
-
+/* Should implement the following endpoints:
+ * /login,  /register, /user/me, /token/refresh,
+ * /groups, /groups/{groupID}/assign/{userID}
+ * /token/refresh
+ * /healthz, /audit/logs, /admin/users, /admin/users
+ */
 func (srv *MService) ServeHTTP() {
 	minioth := srv.Minioth
 
@@ -202,13 +94,6 @@ func (srv *MService) ServeHTTP() {
 	})
 	apiV1 := srv.Engine.Group("/v1")
 	{
-
-		// Should implement the following endpoints:
-		// /login,  /register, /user/me, /token/refresh,
-		// /groups, /groups/{groupID}/assign/{userID}
-		// /token/refresh
-		// /health, /audit/logs, /admin/users, /admin/users
-
 		apiV1.POST("/register", func(c *gin.Context) {
 			log.Printf("%v request at %v.", c.Request.Method, c.Request.URL)
 			var uclaim RegisterClaim
@@ -231,17 +116,17 @@ func (srv *MService) ServeHTTP() {
 				})
 				return
 			}
-			// Check for uniquness
-			err = exists(&uclaim.User)
+			// Check for uniquness [ NOTE: Now its done internally ]
+
+			// Proceed with Registration
+			err = srv.Minioth.Useradd(uclaim.User)
 			if err != nil {
-				log.Printf("failed checking for uniqueness...: %v", err)
-				c.JSON(500, gin.H{
-					"error": err.Error(),
+				log.Print("failed to add user")
+				c.JSON(400, gin.H{
+					"error": "failed to insert the user",
 				})
 				return
 			}
-			// Proceed with Registration
-			srv.Minioth.Useradd(uclaim.User)
 
 			// TODO: should insta "pseudo" login issue a token for registration.
 
@@ -273,7 +158,7 @@ func (srv *MService) ServeHTTP() {
 			}
 			log.Print("claim validated")
 
-			approved, uid := srv.Minioth.approveUser(lclaim.Username, lclaim.Password)
+			approved, err := srv.Minioth.Authenticate(lclaim.Username, lclaim.Password)
 			if !approved {
 				log.Printf("invalid credentials. login failed")
 				c.JSON(400, gin.H{
@@ -285,12 +170,7 @@ func (srv *MService) ServeHTTP() {
 
 			// TODO: should upgrde the way I create users.. need to be able to create admins as well...
 			// or perhaps make the root admin be able to "promote" a user
-			var token string
-			if uid < 1000 {
-				token, err = GenerateAccessJWT(lclaim.Username, "admin")
-			} else {
-				token, err = GenerateAccessJWT(lclaim.Username, "member")
-			}
+			token, err := GenerateAccessJWT(lclaim.Username, "admin")
 			if err != nil {
 				log.Fatalf("failed generating jwt token: %v", err)
 			}
@@ -487,7 +367,7 @@ func (srv *MService) ServeHTTP() {
 	}
 
 	admin := srv.Engine.Group("/admin")
-	admin.Use(AuthMiddleware("admin"))
+	// admin.Use(AuthMiddleware("admin"))
 	{
 
 		admin.GET("/audit/logs", func(c *gin.Context) {
@@ -559,6 +439,168 @@ func (srv *MService) ServeHTTP() {
 	}
 
 	log.Println("Server exiting")
+}
+
+/* For this service, authorization is required only for admin role. */
+func AuthMiddleware(role string) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		authHeader := c.GetHeader("Authorization")
+		if authHeader == "" {
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "Authorization header is required"})
+			c.Abort()
+			return
+		}
+
+		log.Printf("auth_header: %s", authHeader)
+
+		// Extract the token from the Authorization header
+		tokenString := authHeader[len("Bearer "):]
+		if tokenString == "" {
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "Bearer token is required"})
+			c.Abort()
+			return
+		}
+
+		log.Printf("bearer token: %s", tokenString)
+
+		// Parse and validate the token
+		token, err := jwt.ParseWithClaims(tokenString, &CustomClaims{}, func(token *jwt.Token) (interface{}, error) {
+			if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
+				return nil, fmt.Errorf("unexpected signing method: %v", token.Header["alg"])
+			}
+			return jwtSecretKey, nil
+		})
+
+		log.Print(token)
+
+		if err != nil || !token.Valid {
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid token"})
+			c.Abort()
+			return
+		}
+
+		// Set claims in the context for further use
+		if claims, ok := token.Claims.(*CustomClaims); ok {
+			if claims.Role != role {
+				c.JSON(http.StatusUnauthorized, gin.H{
+					"error": "invalid user",
+				})
+				c.Abort()
+				return
+			}
+			c.Set("username", claims.UserID)
+			c.Set("role", claims.Role)
+		} else {
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid token claims"})
+			c.Abort()
+			return
+		}
+
+		c.Next()
+	}
+}
+
+func GenerateJWT(userID, role string) (string, error) {
+	// Set the claims for the token
+	claims := CustomClaims{
+		UserID: userID,
+		Role:   role,
+		RegisteredClaims: jwt.RegisteredClaims{
+			Issuer:    "minioth",
+			ExpiresAt: jwt.NewNumericDate(time.Now().Add(time.Hour * 24)), // Token expiration time (24 hours)
+			IssuedAt:  jwt.NewNumericDate(time.Now()),
+			Subject:   userID,
+		},
+	}
+
+	// Create the token using the HS256 signing method
+	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
+
+	// Sign the token using the secret key
+	tokenString, err := token.SignedString(jwtSecretKey)
+	if err != nil {
+		return "", fmt.Errorf("failed to sign token: %w", err)
+	}
+
+	return tokenString, nil
+}
+
+func VerifyJWT(tokenString string) (*CustomClaims, error) {
+	// Parse the token
+	token, err := jwt.ParseWithClaims(tokenString, &CustomClaims{}, func(token *jwt.Token) (interface{}, error) {
+		// Make sure the signing method is HMAC (HS256)
+		if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
+			return nil, fmt.Errorf("unexpected signing method: %v", token.Header["alg"])
+		}
+		return jwtSecretKey, nil
+	})
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse token: %w", err)
+	}
+
+	// Extract claims if the token is valid
+	if claims, ok := token.Claims.(*CustomClaims); ok && token.Valid {
+		return claims, nil
+	}
+
+	return nil, fmt.Errorf("invalid token")
+}
+
+func offLimits(str string) bool {
+	if str == "root" || str == "kubernetes" {
+		return true
+	}
+	return false
+}
+
+func (l *LoginClaim) validateClaim() error {
+	if l.Username == "" {
+		return errors.New("username cannot be empty")
+	}
+
+	if !IsAlphanumericPlus(l.Username) {
+		return fmt.Errorf("username %q is invalid: only alphanumeric chararctes[@+] are allowed", l.Username)
+	}
+
+	if l.Password == "" {
+		return errors.New("password cannot be empty")
+	}
+
+	return nil
+}
+
+func (u *RegisterClaim) validateUser() error {
+	if u.User.Name == "" {
+		return errors.New("username cannot be empty")
+	}
+
+	if offLimits(u.User.Name) {
+		return errors.New("username off limits")
+	}
+
+	if !IsAlphanumericPlus(u.User.Name) {
+		return fmt.Errorf("username %q is invalid: only alphanumeric characters[@+] are allowed", u.User.Name)
+	}
+
+	if len(u.User.Info) > 100 {
+		return fmt.Errorf("info field is too long: maximum allowed length is 100 characters")
+	}
+
+	// Validate UID
+	if u.User.Uid < 0 {
+		return fmt.Errorf("uid '%d' is invalid: must be a non-negative integer", u.User.Uid)
+	}
+
+	// Validate Primary Group
+	if u.User.Pgroup < 0 {
+		return fmt.Errorf("primary group '%d' is invalid: must be a non-negative integer", u.User.Pgroup)
+	}
+
+	if err := u.User.Password.validatePassword(); err != nil {
+		return fmt.Errorf("password validation error: %w", err)
+	}
+
+	return nil
 }
 
 // jwt

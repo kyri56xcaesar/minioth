@@ -1,0 +1,20 @@
+{
+  "user":{
+    "username":"koularos",
+    "info":"test",
+    "home":"agasg",
+    "shell":"agagsa",
+    "password":{
+      "hashpass":"test",
+      "lastPasswordChange":"2020-01-01",
+      "minimumPasswordAge":"1m",
+      "maximumPasswordAge":"2m",
+      "warningPeriod":"2w",
+      "inactivityPeriod":"2w",
+      "expirationDate":"4w",
+      "passwordLength":10
+    },
+    "uid":2,
+    "pgroup":1
+  }
+}
