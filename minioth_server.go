@@ -129,10 +129,10 @@ func (srv *MService) ServeHTTP() {
 			}
 
 			// TODO: should insta "pseudo" login issue a token for registration.
-
+			// can I redirect to login?
 			c.JSON(200, gin.H{
-				"username": uclaim.User.Name,
-				"password": uclaim.User.Password.Hashpass,
+				"message":   "Registration successful!. Log in.",
+				"login_url": "/v1/login",
 			})
 		})
 
