@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"strings"
 
 	"golang.org/x/crypto/bcrypt"
 )
@@ -19,19 +20,7 @@ import (
  */
 
 const (
-	MINIOTH_PASSWD string = "data/plain/mpasswd"
-	MINIOTH_GROUP  string = "data/plain/mgroup"
-	MINIOTH_SHADOW string = "data/plain/mshadow"
-
-	HASH_COST  int    = 16
-	MINIOTH_DB string = "data/db/minioth.db"
-
-	PLACEHOLDER_PASS string = "3ncrypr3d"
-	DEL              string = ":"
-	// username:password ref:uuid:guid:info:home:shell
-	ENTRY_MPASSWD_FORMAT string = "%s" + DEL + "%s" + DEL + "%v" + DEL + "%v" + DEL + "%s" + DEL + "%s" + DEL + "%s\n"
-	ENTRY_MSHADOW_FORMAT string = "%s" + DEL + "%s" + DEL + "%s" + DEL + "%s" + DEL + "%s" + DEL + "%s" + DEL + "%s" + DEL + "%s" + DEL + "%v\n"
-	ENTRY_MGROUP_FORMAT  string = "%s" + DEL + "%s" + DEL + "%v\n"
+	HASH_COST int = 16
 )
 
 type MiniothHandler interface {
@@ -48,7 +37,7 @@ type MiniothHandler interface {
 
 	Select(id string) []string
 
-	Authenticate(username, password string) (bool, error)
+	Authenticate(username, password string) ([]Group, error)
 }
 
 type User struct {
@@ -96,7 +85,7 @@ type Minioth struct {
 
 /* Use this function to create an instance of minioth. */
 func NewMinioth(rootname string, useDb bool, dbPath string) Minioth {
-	log.Print("Creating new minioth")
+	log.Print("Creating new minioth...")
 
 	var handler MiniothHandler
 
@@ -120,7 +109,6 @@ func NewMinioth(rootname string, useDb bool, dbPath string) Minioth {
 		handler: handler,
 	}
 
-	log.Print("About to init..")
 	newM.handler.Init()
 
 	return newM
@@ -158,7 +146,7 @@ func (m *Minioth) Select(id string) []string {
 	return m.handler.Select(id)
 }
 
-func (m *Minioth) Authenticate(username, password string) (bool, error) {
+func (m *Minioth) Authenticate(username, password string) ([]Group, error) {
 	return m.handler.Authenticate(username, password)
 }
 
@@ -230,4 +218,18 @@ func (m *Minioth) sync() error {
 
 func (u *User) toString() string {
 	return fmt.Sprintf("{%v, %v, %v, %v, %v, %v}", u.Name, u.Info, u.Home, u.Shell, u.Uid, u.Pgroup)
+}
+
+func (g *Group) toString() string {
+	return fmt.Sprintf("%v", g.Name)
+}
+
+func groupsToString(groups []Group) string {
+	var res []string
+
+	for _, group := range groups {
+		res = append(res, group.toString())
+	}
+
+	return strings.Join(res, ",")
 }

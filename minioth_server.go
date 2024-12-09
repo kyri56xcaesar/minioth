@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os/signal"
 	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
@@ -53,7 +54,7 @@ type LoginClaim struct {
 
 type CustomClaims struct {
 	UserID string `json:"user_id"`
-	Role   string `json:"role"`
+	Groups string `json:"groups"`
 	jwt.RegisteredClaims
 }
 
@@ -158,11 +159,11 @@ func (srv *MService) ServeHTTP() {
 			}
 			log.Print("claim validated")
 
-			approved, err := srv.Minioth.Authenticate(lclaim.Username, lclaim.Password)
-			if !approved {
-				log.Printf("invalid credentials. login failed")
+			groups, err := srv.Minioth.Authenticate(lclaim.Username, lclaim.Password)
+			if err != nil {
+				log.Printf("error: %v", err)
 				c.JSON(400, gin.H{
-					"error": "invalid credentials",
+					"error": "failed to authenticate",
 				})
 				return
 			}
@@ -170,7 +171,7 @@ func (srv *MService) ServeHTTP() {
 
 			// TODO: should upgrde the way I create users.. need to be able to create admins as well...
 			// or perhaps make the root admin be able to "promote" a user
-			token, err := GenerateAccessJWT(lclaim.Username, "admin")
+			token, err := GenerateAccessJWT(lclaim.Username, groupsToString(groups))
 			if err != nil {
 				log.Fatalf("failed generating jwt token: %v", err)
 			}
@@ -224,7 +225,7 @@ func (srv *MService) ServeHTTP() {
 				return
 			}
 
-			newAccessToken, err := GenerateAccessJWT(claims.UserID, claims.Role)
+			newAccessToken, err := GenerateAccessJWT(claims.UserID, claims.Groups)
 			if err != nil {
 				log.Printf("error generating new access token: %v", err)
 				c.JSON(http.StatusInternalServerError, gin.H{
@@ -298,7 +299,7 @@ func (srv *MService) ServeHTTP() {
 			response := make(map[string]string)
 			response["valid"] = strconv.FormatBool(token.Valid)
 			response["user"] = claims.UserID
-			response["role"] = claims.Role
+			response["groups"] = claims.Groups
 			response["issued_at"] = claims.IssuedAt.String()
 			response["expires_at"] = claims.ExpiresAt.String()
 
@@ -350,7 +351,7 @@ func (srv *MService) ServeHTTP() {
 			response := make(map[string]string)
 			response["valid"] = strconv.FormatBool(token.Valid)
 			response["user"] = claims.UserID
-			response["role"] = claims.Role
+			response["groups"] = claims.Groups
 			response["issued_at"] = claims.IssuedAt.String()
 			response["expires_at"] = claims.ExpiresAt.String()
 
@@ -367,7 +368,7 @@ func (srv *MService) ServeHTTP() {
 	}
 
 	admin := srv.Engine.Group("/admin")
-	// admin.Use(AuthMiddleware("admin"))
+	admin.Use(AuthMiddleware("admin"))
 	{
 
 		admin.GET("/audit/logs", func(c *gin.Context) {
@@ -481,7 +482,7 @@ func AuthMiddleware(role string) gin.HandlerFunc {
 
 		// Set claims in the context for further use
 		if claims, ok := token.Claims.(*CustomClaims); ok {
-			if claims.Role != role {
+			if !strings.Contains(claims.Groups, role) {
 				c.JSON(http.StatusUnauthorized, gin.H{
 					"error": "invalid user",
 				})
@@ -489,7 +490,7 @@ func AuthMiddleware(role string) gin.HandlerFunc {
 				return
 			}
 			c.Set("username", claims.UserID)
-			c.Set("role", claims.Role)
+			c.Set("groups", claims.Groups)
 		} else {
 			c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid token claims"})
 			c.Abort()
@@ -500,11 +501,11 @@ func AuthMiddleware(role string) gin.HandlerFunc {
 	}
 }
 
-func GenerateJWT(userID, role string) (string, error) {
+func GenerateJWT(userID, groups string) (string, error) {
 	// Set the claims for the token
 	claims := CustomClaims{
 		UserID: userID,
-		Role:   role,
+		Groups: groups,
 		RegisteredClaims: jwt.RegisteredClaims{
 			Issuer:    "minioth",
 			ExpiresAt: jwt.NewNumericDate(time.Now().Add(time.Hour * 24)), // Token expiration time (24 hours)
@@ -604,11 +605,11 @@ func (u *RegisterClaim) validateUser() error {
 }
 
 // jwt
-func GenerateAccessJWT(userID, role string) (string, error) {
+func GenerateAccessJWT(userID, groups string) (string, error) {
 	// Set the claims for the token
 	claims := CustomClaims{
 		UserID: userID,
-		Role:   role,
+		Groups: groups,
 		RegisteredClaims: jwt.RegisteredClaims{
 			Issuer:    "minioth",
 			ExpiresAt: jwt.NewNumericDate(time.Now().Add(time.Hour * 2)), // Token expiration time (24 hours)
@@ -632,7 +633,7 @@ func GenerateAccessJWT(userID, role string) (string, error) {
 func GenerateRefreshJWT(userID string) (string, error) {
 	claims := CustomClaims{
 		UserID: userID,
-		Role:   "not-needed",
+		Groups: "not-needed",
 		RegisteredClaims: jwt.RegisteredClaims{
 			ExpiresAt: jwt.NewNumericDate(time.Now().Add(time.Hour * 72)), // Token expiration time (24 hours)
 			IssuedAt:  jwt.NewNumericDate(time.Now()),

@@ -9,6 +9,18 @@ import (
 	"strings"
 )
 
+const (
+	MINIOTH_PASSWD   string = "data/plain/mpasswd"
+	MINIOTH_GROUP    string = "data/plain/mgroup"
+	MINIOTH_SHADOW   string = "data/plain/mshadow"
+	PLACEHOLDER_PASS string = "3ncrypr3d"
+	DEL              string = ":"
+	// username:password ref:uuid:guid:info:home:shell
+	ENTRY_MPASSWD_FORMAT string = "%s" + DEL + "%s" + DEL + "%v" + DEL + "%v" + DEL + "%s" + DEL + "%s" + DEL + "%s\n"
+	ENTRY_MSHADOW_FORMAT string = "%s" + DEL + "%s" + DEL + "%s" + DEL + "%s" + DEL + "%s" + DEL + "%s" + DEL + "%s" + DEL + "%s" + DEL + "%v\n"
+	ENTRY_MGROUP_FORMAT  string = "%s" + DEL + "%s" + DEL + "%v\n"
+)
+
 type PlainHandler struct{}
 
 /*  */
@@ -214,28 +226,35 @@ func (m *PlainHandler) Select(id string) []string {
 }
 
 /* approval of minioth means, user exists and password is valid */
-func (m *PlainHandler) Authenticate(username, password string) (bool, error) {
+func (m *PlainHandler) Authenticate(username, password string) ([]Group, error) {
 	log.Printf("authenticating user... %q:%q", username, password)
 
 	file, err := os.Open(MINIOTH_PASSWD)
 	if err != nil {
 		log.Printf("failed to open file: %v", err)
-		return false, err
+		return nil, err
 	}
 	defer file.Close()
 
 	pfile, err := os.Open(MINIOTH_SHADOW)
 	if err != nil {
 		log.Printf("failed to open file: %v", err)
-		return false, err
+		return nil, err
 	}
 	defer pfile.Close()
+
+	gfile, err := os.Open(MINIOTH_GROUP)
+	if err != nil {
+		log.Printf("failed to open file: %v", err)
+		return nil, err
+	}
+	defer gfile.Close()
 
 	log.Print("searching for user entry...")
 	userline, line, err := search(username, file)
 	if err != nil || line == -1 {
 		log.Printf("failed to search for user: %v", err)
-		return false, err
+		return nil, err
 	}
 	log.Print(userline)
 
@@ -243,14 +262,24 @@ func (m *PlainHandler) Authenticate(username, password string) (bool, error) {
 	passline, pline, err := search(username, pfile)
 	if err != nil || pline == -1 {
 		log.Printf("failed to search for pass: %v", err)
-		return false, err
+		return nil, err
 	}
 
 	// log.Printf("userentry: %s, passwordentry: %s", userline, passline)
 
 	hashpass := strings.SplitN(passline, DEL, 3)[1]
 
-	return verifyPass([]byte(hashpass), []byte(password)), nil
+	groups, err := getGroups(username, gfile)
+	if err != nil {
+		log.Printf("failed to retrieve user groups: %v", err)
+		return nil, err
+	}
+
+	if verifyPass([]byte(hashpass), []byte(password)) {
+		return groups, nil
+	} else {
+		return nil, fmt.Errorf("failed to authenticate, bad creds")
+	}
 }
 
 // Unused
@@ -337,7 +366,7 @@ func search(username string, file *os.File) (string, int, error) {
 	lineIndex := 0
 	for scanner.Scan() {
 		line := scanner.Text()
-		parts := strings.SplitN(line, ":", 2)
+		parts := strings.SplitN(line, DEL, 2)
 		if len(parts) != 2 {
 			return "", -1, fmt.Errorf("no content found")
 		}
@@ -350,6 +379,30 @@ func search(username string, file *os.File) (string, int, error) {
 	}
 
 	return "", -1, fmt.Errorf("user not found")
+}
+
+func getGroups(username string, file *os.File) ([]Group, error) {
+	if username == "" || file == nil {
+		return nil, fmt.Errorf("must provide valid parms")
+	}
+	scanner := bufio.NewScanner(file)
+
+	var groups []Group
+	for scanner.Scan() {
+		line := scanner.Text()
+		parts := strings.SplitN(line, DEL, 2)
+		if len(parts) != 2 {
+			return nil, fmt.Errorf("no content found")
+		}
+		if strings.Contains(parts[1], username) {
+			group := Group{
+				Name: parts[0],
+			}
+			groups = append(groups, group)
+		}
+
+	}
+	return groups, nil
 }
 
 /* Look for all the existing uids and give the succeeding one in order.

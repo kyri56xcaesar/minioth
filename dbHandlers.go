@@ -10,6 +10,8 @@ import (
 )
 
 const (
+	MINIOTH_DB string = "data/db/minioth.db"
+
 	initSql string = `
   CREATE TABLE IF NOT EXISTS users (
 		uid INTEGER PRIMARY KEY,
@@ -35,6 +37,13 @@ const (
 		gid INTEGER PRIMARY KEY,
 		groupname TEXT UNIQUE
 	);
+  CREATE TABLE IF NOT EXISTS user_groups (
+    uid INTEGER NOT NULL,
+    gid INTEGER NOT NULL,
+    PRIMARY KEY (uid, gid),
+    FOREIGN KEY (uid) REFERENCES users(uid),
+    FOREIGN KEY (gid) REFERENCES groups(gid)
+  );
   `
 )
 
@@ -52,28 +61,22 @@ func (m *DBHandler) getConn() (*sql.DB, error) {
 }
 
 func (m *DBHandler) Init() {
-	log.Print("Initializing minioth DB")
+	log.Print("Initializing... Minioth DB")
 	_, err := os.Stat("data")
 	if err != nil {
-		log.Print("doesn't exist...")
 		err = os.Mkdir("data", 0o700)
 		if err != nil {
 			panic("failed to make new directory.")
 		}
 	}
 
-	log.Print("Checking if data dir exists...")
-
 	_, err = os.Stat("data/db")
 	if err != nil {
-		log.Print("doesn't exist...")
 		err = os.Mkdir("data/db", 0o700)
 		if err != nil {
 			panic("failed to make new directory.")
 		}
 	}
-
-	log.Print("Checking if plain dir exists...")
 
 	db, err := m.getConn()
 	if err != nil {
@@ -86,7 +89,32 @@ func (m *DBHandler) Init() {
 		log.Fatal("Failed to create tables:", err)
 	}
 
-	log.Print("Inserting root user...")
+	// Check for main group existence
+	log.Print("Checking for main groups...")
+	var mainGroupsExist bool
+	err = db.QueryRow("SELECT EXISTS(SELECT 2 FROM groups WHERE gid = 0 OR gid = 1000)").Scan(&mainGroupsExist)
+	if err != nil {
+		log.Fatalf("Failed to query groups")
+	}
+
+	if !mainGroupsExist {
+		log.Print("Inserting main groups: admin/user -> gid: 0/1000")
+
+		query := `
+      INSERT INTO
+        groups (gid, groupname)
+      VALUES 
+        (0, 'admin'),
+        (1000, 'user');`
+
+		_, err = db.Exec(query, nil)
+		if err != nil {
+			log.Fatalf("failed to insert groups: %v", err)
+		}
+	} else {
+		log.Print("groups already exist!")
+	}
+
 	log.Print("Checking for root user...")
 	// Check if the root user already exists
 	var rootExists bool
@@ -154,6 +182,17 @@ func (m *DBHandler) insertRootUser(user User, db *sql.DB) error {
 		return fmt.Errorf("failed to insert root password: %w", err)
 	}
 
+	usergroupQuery := `
+    INSERT INTO
+      user_groups (uid, gid)
+    VALUES
+      (?, ?)`
+	_, err = tx.Exec(usergroupQuery, user.Uid, 0)
+	if err != nil {
+		tx.Rollback()
+		return fmt.Errorf("failed to group root user: %w", err)
+	}
+
 	err = tx.Commit()
 	if err != nil {
 		return fmt.Errorf("failed to commit transaction: %w", err)
@@ -208,6 +247,18 @@ func (m *DBHandler) Useradd(user User) error {
     passwords (uid, hashpass, lastpasswordchange, minimumpasswordage, maximumpasswordage, warningperiod, inactivityperiod, expirationdate, passwordlength)
   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
   `
+
+	usergroupQuery := `
+    INSERT INTO
+      user_groups (uid, gid)
+    VALUES
+      (?, ?)`
+	_, err = tx.Exec(usergroupQuery, user.Uid, 1000)
+	if err != nil {
+		tx.Rollback()
+		log.Printf("failed to group user: %v", err)
+		return err
+	}
 
 	hashPass, err := hash([]byte(user.Password.Hashpass))
 	if err != nil {
@@ -325,48 +376,97 @@ func (m *DBHandler) Select(id string) []string {
 	}
 }
 
-func (m *DBHandler) Authenticate(username, password string) (bool, error) {
+func (m *DBHandler) Authenticate(username, password string) ([]Group, error) {
 	log.Printf("authenticating user... %q:%q", username, password)
 
 	db, err := m.getConn()
 	if err != nil {
-		return false, err
+		return nil, err
 	}
 	defer db.Close()
 
-	user := getUser(username, db)
+	user, groups := getUser(username, db)
 	if user == nil {
 		log.Print("user not found")
-		return false, fmt.Errorf("user not existent")
+		return nil, fmt.Errorf("user not existent")
 	}
 
-	return verifyPass([]byte(user.Password.Hashpass), []byte(password)), nil
+	if verifyPass([]byte(user.Password.Hashpass), []byte(password)) {
+		return groups, nil
+	} else {
+		return nil, fmt.Errorf("failed to authenticate, bad credentials.")
+	}
 }
 
-func getUser(username string, db *sql.DB) *User {
-	userQuery := `SELECT username, info, home, shell, uid, pgroup FROM users WHERE username = ?`
-	passwordQuery := `SELECT hashpass, lastPasswordChange, minimumPasswordAge, maximumPasswordAge, warningPeriod, inactivityPeriod, expirationDate, passwordLength FROM passwords WHERE uid = ?`
+func getUser(username string, db *sql.DB) (*User, []Group) {
+	userQuery := `
+    SELECT 
+      u.username, u.info, u.home, u.shell, u.uid, u.pgroup,
+      g.gid, g.groupname
+    FROM 
+      users u
+    LEFT JOIN
+      user_groups ug ON u.uid = ug.uid
+    LEFT JOIN
+      groups g ON ug.gid = g.gid
+    WHERE 
+      username = ?
+    `
 
 	log.Printf("looking for user with name: %q...", username)
 
-	user := User{}
-	err := db.QueryRow(userQuery, username).Scan(&user.Name, &user.Info, &user.Home, &user.Shell, &user.Uid, &user.Pgroup)
+	rows, err := db.Query(userQuery, username)
 	if err != nil {
 		log.Printf("user not found: %v", err)
-		return nil
+		return nil, nil
+	}
+	defer rows.Close()
+
+	var user *User
+	groups := make([]Group, 0)
+
+	for rows.Next() {
+		var (
+			uid, gid, pgroup                sql.NullInt64
+			uname, info, home, shell, gname sql.NullString
+		)
+
+		if err := rows.Scan(&uname, &info, &home, &shell, &uid, &pgroup, &gid, &gname); err != nil {
+			log.Printf("failed to ugr scan row: %v", err)
+			return nil, nil
+		}
+
+		if user == nil {
+			user = &User{
+				Uid:    int(uid.Int64),
+				Name:   uname.String,
+				Info:   info.String,
+				Home:   home.String,
+				Shell:  shell.String,
+				Pgroup: int(pgroup.Int64),
+			}
+		}
+
+		if gid.Valid && gname.Valid {
+			groups = append(groups, Group{
+				Gid:  gid.Int64,
+				Name: gname.String,
+			})
+		}
 	}
 
+	passwordQuery := `SELECT hashpass, lastPasswordChange, minimumPasswordAge, maximumPasswordAge, warningPeriod, inactivityPeriod, expirationDate, passwordLength FROM passwords WHERE uid = ?`
 	password := Password{}
 	err = db.QueryRow(passwordQuery, user.Uid).Scan(&password.Hashpass, &password.LastPasswordChange, &password.MinPasswordAge,
 		&password.MaxPasswordAge, &password.WarningPeriod, &password.InactivityPeriod, &password.ExpirationDate, &password.Length)
 	if err != nil {
 		log.Printf("password not found: %v", err)
-		return nil
+		return nil, nil
 	}
 
 	user.Password = password
 	log.Printf("User found: %+v", user)
-	return &user
+	return user, groups
 }
 
 func (m *DBHandler) NextUid() (int, error) {
