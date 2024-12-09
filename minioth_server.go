@@ -171,9 +171,11 @@ func (srv *MService) ServeHTTP() {
 			}
 			log.Print("claim approved")
 
+			strGroups := groupsToString(groups)
+
 			// TODO: should upgrde the way I create users.. need to be able to create admins as well...
 			// or perhaps make the root admin be able to "promote" a user
-			token, err := GenerateAccessJWT(lclaim.Username, groupsToString(groups))
+			token, err := GenerateAccessJWT(lclaim.Username, strGroups)
 			if err != nil {
 				log.Fatalf("failed generating jwt token: %v", err)
 			}
@@ -186,6 +188,7 @@ func (srv *MService) ServeHTTP() {
 			// NOTE: use Authorization header for now.
 			c.JSON(200, gin.H{
 				"username":      lclaim.Username,
+				"groups":        strGroups,
 				"acces_token":   token,
 				"refresh_token": refreshToken,
 			})
