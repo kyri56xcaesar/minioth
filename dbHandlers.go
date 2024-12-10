@@ -387,8 +387,7 @@ func (m *DBHandler) Authenticate(username, password string) ([]Group, error) {
 
 	user, groups := getUser(username, db)
 	if user == nil {
-		log.Print("user not found")
-		return nil, fmt.Errorf("user not existent")
+		return nil, fmt.Errorf("user not found")
 	}
 
 	if verifyPass([]byte(user.Password.Hashpass), []byte(password)) {
@@ -415,58 +414,55 @@ func getUser(username string, db *sql.DB) (*User, []Group) {
 
 	log.Printf("looking for user with name: %q...", username)
 
-	rows, err := db.Query(userQuery, username)
-	if err != nil {
-		log.Printf("user not found: %v", err)
+	row := db.QueryRow(userQuery, username)
+	if row != nil {
 		return nil, nil
 	}
-	defer rows.Close()
 
-	var user *User
+	user := User{}
 	groups := make([]Group, 0)
 
-	for rows.Next() {
-		var (
-			uid, gid, pgroup                sql.NullInt64
-			uname, info, home, shell, gname sql.NullString
-		)
+	var (
+		gid   sql.NullInt64
+		gname sql.NullString
+	)
 
-		if err := rows.Scan(&uname, &info, &home, &shell, &uid, &pgroup, &gid, &gname); err != nil {
-			log.Printf("failed to ugr scan row: %v", err)
-			return nil, nil
-		}
-
-		if user == nil {
-			user = &User{
-				Uid:    int(uid.Int64),
-				Name:   uname.String,
-				Info:   info.String,
-				Home:   home.String,
-				Shell:  shell.String,
-				Pgroup: int(pgroup.Int64),
-			}
-		}
-
-		if gid.Valid && gname.Valid {
-			groups = append(groups, Group{
-				Gid:  gid.Int64,
-				Name: gname.String,
-			})
-		}
+	if err := row.Scan(&user.Name, &user.Info, &user.Home, &user.Shell, &user.Uid, &user.Pgroup, &gid, &gname); err != nil {
+		log.Printf("failed to ugr scan row: %v", err)
+		return nil, nil
 	}
 
-	passwordQuery := `SELECT hashpass, lastPasswordChange, minimumPasswordAge, maximumPasswordAge, warningPeriod, inactivityPeriod, expirationDate, passwordLength FROM passwords WHERE uid = ?`
+	if gid.Valid && gname.Valid {
+		groups = append(groups, Group{
+			Gid:  gid.Int64,
+			Name: gname.String,
+		})
+	}
+
+	passwordQuery := `
+    SELECT 
+      hashpass, lastPasswordChange, minimumPasswordAge, maximumPasswordAge,
+      warningPeriod, inactivityPeriod, expirationDate, passwordLength 
+    FROM 
+      passwords 
+    WHERE 
+      uid = ?`
 	password := Password{}
-	err = db.QueryRow(passwordQuery, user.Uid).Scan(&password.Hashpass, &password.LastPasswordChange, &password.MinPasswordAge,
+	row = db.QueryRow(passwordQuery, user.Uid)
+	if row == nil {
+		return nil, nil
+	}
+
+	err := row.Scan(&password.Hashpass, &password.LastPasswordChange, &password.MinPasswordAge,
 		&password.MaxPasswordAge, &password.WarningPeriod, &password.InactivityPeriod, &password.ExpirationDate, &password.Length)
 	if err != nil {
-		log.Printf("password not found: %v", err)
+		log.Printf("failed to scan password: %v", err)
 		return nil, nil
 	}
 
 	user.Password = password
 	log.Printf("User found: %+v", user)
-	return user, groups
+	return &user, groups
 }
 
 func (m *DBHandler) NextUid() (int, error) {
