@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"strings"
 
 	_ "github.com/marcboeker/go-duckdb"
 )
@@ -238,6 +239,10 @@ func (m *DBHandler) Useradd(user User) error {
 	if err != nil {
 		log.Printf("failed to execute query: %v", err)
 		tx.Rollback()
+
+		if strings.Contains(strings.ToLower(err.Error()), "duplicate") {
+			return fmt.Errorf("user already exists.")
+		}
 		return err
 	}
 
