@@ -195,30 +195,31 @@ func (m *PlainHandler) Passwd(username, password string) error {
 }
 
 /* this method is supposed to return eveyrhing from the given file */
-func (m *PlainHandler) Select(id string) []string {
+func (m *PlainHandler) Select(id string) []interface{} {
 	log.Printf("Selecting all %q", id)
 	switch id {
 	case "users":
-		var users []string
+		// var users []User
 
-		res, err := os.ReadFile(MINIOTH_PASSWD)
-		if err != nil {
-			log.Printf("error reading file: %v", err)
-			return nil
-		}
-		users = strings.Split(string(res), "\n")
+		//res, err := os.ReadFile(MINIOTH_PASSWD)
+		//if err != nil {
+		//	log.Printf("error reading file: %v", err)
+		//	return nil
+		//}
+		//users = strings.Split(string(res), "\n")
 
-		return users
+		// return users
+		return nil
 	case "groups":
-		var groups []string
+		/*var groups []string
 
 		res, err := os.ReadFile(MINIOTH_GROUP)
 		if err != nil {
 			log.Printf("error reading file: %v", err)
 			return nil
 		}
-		groups = strings.Split(string(res), "\n")
-		return groups
+		groups = strings.Split(string(res), "\n")*/
+		return nil
 	default:
 		log.Print("Invalid id: " + id)
 		return nil

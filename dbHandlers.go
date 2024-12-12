@@ -176,7 +176,7 @@ func (m *DBHandler) insertRootUser(user User, db *sql.DB) error {
     VALUES 
         (?, ?, ?, ?, ?, ?, ?, ?, ?)`
 	_, err = tx.Exec(passwordQuery, user.Uid, hashPass, user.Password.LastPasswordChange, user.Password.MinPasswordAge,
-		user.Password.MaxPasswordAge, user.Password.WarningPeriod, user.Password.InactivityPeriod, user.Password.ExpirationDate, user.Password.Length)
+		user.Password.MaxPasswordAge, user.Password.WarningPeriod, user.Password.InactivityPeriod, user.Password.ExpirationDate, len(user.Password.Hashpass))
 	if err != nil {
 		tx.Rollback()
 		return fmt.Errorf("failed to insert root password: %w", err)
@@ -269,7 +269,7 @@ func (m *DBHandler) Useradd(user User) error {
 
 	log.Print("executing password query...")
 	_, err = tx.Exec(passwordQuery, user.Uid, hashPass, user.Password.LastPasswordChange, user.Password.MinPasswordAge,
-		user.Password.MaxPasswordAge, user.Password.WarningPeriod, user.Password.InactivityPeriod, user.Password.ExpirationDate, user.Password.Length)
+		user.Password.MaxPasswordAge, user.Password.WarningPeriod, user.Password.InactivityPeriod, user.Password.ExpirationDate, len(user.Password.Hashpass))
 	if err != nil {
 		tx.Rollback()
 		log.Printf("failed to execute query: %v", err)
@@ -285,28 +285,23 @@ func (m *DBHandler) Useradd(user User) error {
 	return nil
 }
 
-func (m *DBHandler) Userdel(username string) error {
+func (m *DBHandler) Userdel(uid string) error {
 	db, err := m.getConn()
 	if err != nil {
 		return err
 	}
 	defer db.Close()
 
-	deleteUserQuery := `DELETE FROM users WHERE username = ?`
+	deleteUserQuery := `DELETE FROM users WHERE uid = ?`
 	deletePasswordQuery := `DELETE FROM passwords WHERE uid = ?`
 
-	res, err := db.Exec(deleteUserQuery, username)
+	_, err = db.Exec(deleteUserQuery, uid)
 	if err != nil {
 		log.Printf("error, failed to delete user: %v", err)
 		return err
 	}
-	uid, err := res.LastInsertId()
-	if err != nil {
-		log.Printf("error, failed to retrieve last inserted id: %v", err)
-		return err
-	}
 
-	_, err = db.Exec(deletePasswordQuery, int(uid))
+	_, err = db.Exec(deletePasswordQuery, uid)
 	if err != nil {
 		log.Printf("error, failed to delete password: %v", err)
 		return err
@@ -335,7 +330,7 @@ func (m *DBHandler) Passwd(username, password string) error {
 	return nil
 }
 
-func (m *DBHandler) Select(id string) []string {
+func (m *DBHandler) Select(id string) []interface{} {
 	log.Printf("Selecting all %q", id)
 	db, err := m.getConn()
 	if err != nil {
@@ -345,9 +340,18 @@ func (m *DBHandler) Select(id string) []string {
 
 	switch id {
 	case "users":
-		var users []string
+		var result []interface{}
 
-		userQuery := `SELECT * FROM users`
+		userQuery := `
+      SELECT  
+        u.uid, u.username, u.info, u.home, u.shell, u.pgroup, GROUP_CONCAT(g.groupname) as groups
+      FROM 
+        users u
+      LEFT JOIN user_groups ug ON ug.uid = u.uid
+      LEFT JOIN groups g ON g.gid = ug.gid
+      GROUP BY 
+        u.uid, u.username, u.info, u.home, u.shell, u.pgroup;
+    `
 		rows, err := db.Query(userQuery, nil)
 		if err != nil {
 			log.Printf("failed to query users...:%v", err)
@@ -357,12 +361,12 @@ func (m *DBHandler) Select(id string) []string {
 
 		for rows.Next() {
 			var user User
-			err := rows.Scan(&user.Uid, &user.Name, &user.Info, &user.Home, &user.Shell, &user.Pgroup)
+			var groups string
+			err := rows.Scan(&user.Uid, &user.Name, &user.Info, &user.Home, &user.Shell, &user.Pgroup, &groups)
 			if err != nil {
 				log.Printf("failed to scan user...: %v", err)
 				return nil
 			}
-			users = append(users, user.toString())
 		}
 
 		return users

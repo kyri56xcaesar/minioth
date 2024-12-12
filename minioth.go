@@ -15,7 +15,7 @@ import (
 *
 * /etc/passwd, /etc/shadow, /etc/group
 *
-* TODO: This program should provide atomicity perhaps
+* WARNING: don't use the plain handler.
 *
  */
 
@@ -24,21 +24,22 @@ var HASH_COST int = 16
 type MiniothHandler interface {
 	Init()
 	Useradd(user User) error
-	Userdel(username string) error
+	Userdel(uid string) error
 	Usermod(user User) error
 
 	Groupadd(group Group) error
-	Groupdel(groupname string) error
+	Groupdel(gid string) error
 	Groupmod(group Group) error
 
 	Passwd(username, password string) error
 
-	Select(id string) []string
+	Select(id string) []interface{}
 
 	Authenticate(username, password string) ([]Group, error)
 }
 
 type User struct {
+	Groups   []Group  `json:"groups"`
 	Name     string   `json:"username" form:"username"`
 	Info     string   `json:"info" form:"info"`
 	Home     string   `json:"home" form:"home"`
@@ -55,12 +56,11 @@ type Password struct {
 	WarningPeriod      string `json:"warningPeriod"`
 	InactivityPeriod   string `json:"inactivityPeriod"`
 	ExpirationDate     string `json:"expirationDate"`
-	Length             int    `json:"passwordLength"`
 }
 type Group struct {
 	Name  string `json:"groupname" form:"groupname"`
 	Users []User
-	Gid   int64 `json:"gid" form:"gid"`
+	Gid   int `json:"gid" form:"gid"`
 }
 
 /* use bcrypt blowfish algo (and std lib) to hash a byte array */
@@ -99,7 +99,6 @@ func NewMinioth(rootname string, useDb bool, dbPath string) Minioth {
 			Password: Password{
 				Hashpass:       rootname,
 				ExpirationDate: "",
-				Length:         0,
 			},
 			Pgroup: 0,
 			Uid:    0,
@@ -140,7 +139,7 @@ func (m *Minioth) Passwd(username, password string) error {
 	return m.handler.Passwd(username, password)
 }
 
-func (m *Minioth) Select(id string) []string {
+func (m *Minioth) Select(id string) []interface{} {
 	return m.handler.Select(id)
 }
 
@@ -151,8 +150,8 @@ func (m *Minioth) Authenticate(username, password string) ([]Group, error) {
 /* check password fields for allowed values...*/
 func (p *Password) validatePassword() error {
 	// Validate Password Length
-	if p.Length < 8 {
-		return fmt.Errorf("password length '%d' is too short: minimum required length is 8 characters", p.Length)
+	if len(p.Hashpass) < 8 {
+		return fmt.Errorf("password length '%d' is too short: minimum required length is 8 characters", len(p.Hashpass))
 	}
 
 	// Validate Hashpass
@@ -215,7 +214,7 @@ func (m *Minioth) sync() error {
 }
 
 func (u *User) toString() string {
-	return fmt.Sprintf("{%v, %v, %v, %v, %v, %v}", u.Name, u.Info, u.Home, u.Shell, u.Uid, u.Pgroup)
+	return fmt.Sprintf("%v, %v, %v, %v, %v, %v", u.Name, u.Info, u.Home, u.Shell, u.Uid, u.Pgroup)
 }
 
 func (g *Group) toString() string {

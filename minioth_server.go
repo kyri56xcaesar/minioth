@@ -98,7 +98,6 @@ func (srv *MService) ServeHTTP() {
 	apiV1 := srv.Engine.Group("/v1")
 	{
 		apiV1.POST("/register", func(c *gin.Context) {
-			log.Printf("%v request at %v.", c.Request.Method, c.Request.URL)
 			var uclaim RegisterClaim
 			err := c.BindJSON(&uclaim)
 			if err != nil {
@@ -109,7 +108,6 @@ func (srv *MService) ServeHTTP() {
 				return
 			}
 
-			log.Printf("%+v", uclaim)
 			// Verify user credentials
 			err = uclaim.validateUser()
 			if err != nil {
@@ -144,7 +142,6 @@ func (srv *MService) ServeHTTP() {
 		})
 
 		apiV1.POST("/login", func(c *gin.Context) {
-			log.Printf("%v request at %v.", c.Request.Method, c.Request.URL)
 			var lclaim LoginClaim
 			err := c.BindJSON(&lclaim)
 			if err != nil {
@@ -153,7 +150,6 @@ func (srv *MService) ServeHTTP() {
 				return
 			}
 
-			log.Printf("login claim: %+v", lclaim)
 			// Verify user credentials
 			err = lclaim.validateClaim()
 			if err != nil {
@@ -163,7 +159,6 @@ func (srv *MService) ServeHTTP() {
 				})
 				return
 			}
-			log.Print("claim validated")
 
 			groups, err := srv.Minioth.Authenticate(lclaim.Username, lclaim.Password)
 			if err != nil {
@@ -177,7 +172,6 @@ func (srv *MService) ServeHTTP() {
 				}
 				return
 			}
-			log.Print("claim approved")
 
 			strGroups := groupsToString(groups)
 
@@ -203,7 +197,6 @@ func (srv *MService) ServeHTTP() {
 		})
 
 		apiV1.POST("/token/refresh", func(c *gin.Context) {
-			log.Printf("%v request at %v.", c.Request.Method, c.Request.URL)
 			var requestBody struct {
 				RefreshToken string `json:"refresh_token" binding:"required"`
 			}
@@ -328,7 +321,6 @@ func (srv *MService) ServeHTTP() {
 		})
 
 		apiV1.POST("/user/me", func(c *gin.Context) {
-			log.Printf("%v request at %v.", c.Request.Method, c.Request.URL)
 			var reqBody struct {
 				Token string `json:"token" binding:"required"`
 			}
@@ -381,7 +373,6 @@ func (srv *MService) ServeHTTP() {
 
 		/* This endpoint should change a user password. It must "authenticate" the user. User can only change his password. */
 		apiV1.POST("/passwd", func(c *gin.Context) {
-			log.Printf("%v request at %v.", c.Request.Method, c.Request.URL)
 		})
 
 	}
@@ -391,45 +382,66 @@ func (srv *MService) ServeHTTP() {
 	{
 
 		admin.GET("/audit/logs", func(c *gin.Context) {
-			log.Printf("%v request at %v.", c.Request.Method, c.Request.URL)
 		})
 
 		admin.GET("/users", func(c *gin.Context) {
-			log.Printf("%v request at %v.", c.Request.Method, c.Request.URL)
 			c.JSON(http.StatusOK, gin.H{
 				"content": minioth.Select("users"),
 			})
 		})
 
 		admin.GET("/groups", func(c *gin.Context) {
-			log.Printf("%v request at %v.", c.Request.Method, c.Request.URL)
 			c.JSON(http.StatusOK, gin.H{
 				"content": minioth.Select("groups"),
 			})
 		})
 
+		/* same as register but dont verify content */
 		admin.POST("/useradd", func(c *gin.Context) {
-			log.Printf("%v request at %v.", c.Request.Method, c.Request.URL)
+			var uclaim RegisterClaim
+			err := c.BindJSON(&uclaim)
+			if err != nil {
+				log.Printf("error binding request body to struct: %v", err)
+				c.JSON(http.StatusBadRequest, gin.H{
+					"error": err.Error(),
+				})
+				return
+			}
+
+			err = srv.Minioth.Useradd(uclaim.User)
+			if err != nil {
+				log.Print("failed to add user")
+				if strings.Contains(strings.ToLower(err.Error()), "duplicate") {
+					c.JSON(403, gin.H{"error": "already exists!"})
+				} else {
+					c.JSON(400, gin.H{
+						"error": "failed to insert the user",
+					})
+				}
+				return
+			}
+
+			// TODO: should insta "pseudo" login issue a token for registration.
+			// can I redirect to login?
+			c.JSON(200, gin.H{
+				"message":   "User added.",
+				"login_url": "sure",
+			})
 		})
 
 		admin.DELETE("/userdel", func(c *gin.Context) {
-			log.Printf("%v request at %v.", c.Request.Method, c.Request.URL)
 		})
 
 		admin.PUT("/usermod", func(c *gin.Context) {
-			log.Printf("%v request at %v.", c.Request.Method, c.Request.URL)
 		})
 
 		admin.POST("/groupadd", func(c *gin.Context) {
-			log.Printf("%v request at %v.", c.Request.Method, c.Request.URL)
 		})
 
 		admin.PUT("/groupmod", func(c *gin.Context) {
-			log.Printf("%v request at %v.", c.Request.Method, c.Request.URL)
 		})
 
 		admin.DELETE("/groupdel", func(c *gin.Context) {
-			log.Printf("%v request at %v.", c.Request.Method, c.Request.URL)
 		})
 	}
 
@@ -471,8 +483,6 @@ func AuthMiddleware(role string) gin.HandlerFunc {
 			return
 		}
 
-		log.Printf("auth_header: %s", authHeader)
-
 		// Extract the token from the Authorization header
 		tokenString := authHeader[len("Bearer "):]
 		if tokenString == "" {
@@ -481,8 +491,6 @@ func AuthMiddleware(role string) gin.HandlerFunc {
 			return
 		}
 
-		log.Printf("bearer token: %s", tokenString)
-
 		// Parse and validate the token
 		token, err := jwt.ParseWithClaims(tokenString, &CustomClaims{}, func(token *jwt.Token) (interface{}, error) {
 			if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
@@ -490,8 +498,6 @@ func AuthMiddleware(role string) gin.HandlerFunc {
 			}
 			return jwtSecretKey, nil
 		})
-
-		log.Print(token)
 
 		if err != nil || !token.Valid {
 			c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid token"})
