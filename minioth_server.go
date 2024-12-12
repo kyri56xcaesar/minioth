@@ -154,16 +154,9 @@ func (srv *MService) ServeHTTP() {
 			err = lclaim.validateClaim()
 			if err != nil {
 				log.Printf("failed to validate: %v", err)
-
-				if strings.Contains(err.Error(), "not found") {
-					c.JSON(404, gin.H{
-						"error": err.Error(),
-					})
-				} else {
-					c.JSON(400, gin.H{
-						"error": err.Error(),
-					})
-				}
+				c.JSON(400, gin.H{
+					"error": err.Error(),
+				})
 				return
 			}
 			log.Print("claim validated")
@@ -171,9 +164,13 @@ func (srv *MService) ServeHTTP() {
 			groups, err := srv.Minioth.Authenticate(lclaim.Username, lclaim.Password)
 			if err != nil {
 				log.Printf("error: %v", err)
-				c.JSON(400, gin.H{
-					"error": "failed to authenticate",
-				})
+				if strings.Contains(err.Error(), "not found") {
+					c.JSON(404, gin.H{"error": "user not found"})
+				} else {
+					c.JSON(400, gin.H{
+						"error": "failed to authenticate",
+					})
+				}
 				return
 			}
 			log.Print("claim approved")
