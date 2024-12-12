@@ -125,9 +125,13 @@ func (srv *MService) ServeHTTP() {
 			err = srv.Minioth.Useradd(uclaim.User)
 			if err != nil {
 				log.Print("failed to add user")
-				c.JSON(400, gin.H{
-					"error": "failed to insert the user",
-				})
+				if strings.Contains(strings.ToLower(err.Error()), "duplicate") {
+					c.JSON(403, gin.H{"error": "already exists!"})
+				} else {
+					c.JSON(400, gin.H{
+						"error": "failed to insert the user",
+					})
+				}
 				return
 			}
 
