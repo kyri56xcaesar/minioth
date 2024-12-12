@@ -261,6 +261,12 @@ func (srv *MService) ServeHTTP() {
 				c.Abort()
 				return
 			}
+
+			if !strings.Contains(authHeader, "Bearer ") {
+				c.JSON(http.StatusBadRequest, gin.H{"error": "must contain Bearer token"})
+				c.Abort()
+				return
+			}
 			// Extract the token from the Authorization header
 			tokenString := authHeader[len("Bearer "):]
 			if tokenString == "" {
