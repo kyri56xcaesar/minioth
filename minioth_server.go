@@ -145,7 +145,7 @@ func (srv *MService) ServeHTTP() {
 			err := c.BindJSON(&lclaim)
 			if err != nil {
 				log.Printf("error binding request body to struct: %v", err)
-				c.Error(err)
+				c.JSON(http.StatusBadRequest, gin.H{"error": "binding error"})
 				return
 			}
 
