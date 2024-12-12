@@ -154,9 +154,16 @@ func (srv *MService) ServeHTTP() {
 			err = lclaim.validateClaim()
 			if err != nil {
 				log.Printf("failed to validate: %v", err)
-				c.JSON(400, gin.H{
-					"error": err.Error(),
-				})
+
+				if strings.Contains(err.Error(), "not found") {
+					c.JSON(404, gin.H{
+						"error": err.Error(),
+					})
+				} else {
+					c.JSON(400, gin.H{
+						"error": err.Error(),
+					})
+				}
 				return
 			}
 			log.Print("claim validated")
