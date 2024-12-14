@@ -114,7 +114,7 @@ func (m *PlainHandler) Useradd(user User) error {
 	// file.WriteString(strings.Join([]string{user.Name, "3ncrypr3d", uuid, uuid, user.Info, user.Home, user.Shell}, DEL) + "\n")
 
 	// shadow file
-	fmt.Fprintf(pfile, ENTRY_MSHADOW_FORMAT, user.Name, hashPass, user.Password.LastPasswordChange, user.Password.MinPasswordAge, user.Password.MaxPasswordAge, user.Password.WarningPeriod, user.Password.InactivityPeriod, user.Password.ExpirationDate, user.Password.Length)
+	fmt.Fprintf(pfile, ENTRY_MSHADOW_FORMAT, user.Name, hashPass, user.Password.LastPasswordChange, user.Password.MinPasswordAge, user.Password.MaxPasswordAge, user.Password.WarningPeriod, user.Password.InactivityPeriod, user.Password.ExpirationDate, len(user.Password.Hashpass))
 
 	log.Print("Useradd successful.")
 	return nil

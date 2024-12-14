@@ -2,6 +2,7 @@ package minioth
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
@@ -373,8 +374,22 @@ func (srv *MService) ServeHTTP() {
 
 		/* This endpoint should change a user password. It must "authenticate" the user. User can only change his password. */
 		apiV1.POST("/passwd", func(c *gin.Context) {
-		})
+			var lclaim LoginClaim
+			err := c.BindJSON(&lclaim)
+			if err != nil {
+				log.Printf("error binding request body to struct: %v", err)
+				c.JSON(http.StatusBadRequest, gin.H{"error": "binding error"})
+				return
+			}
 
+			// Verify user credentials
+			if lclaim.Password == "" {
+				c.JSON(400, gin.H{
+					"error": "bad password",
+				})
+				return
+			}
+		})
 	}
 
 	admin := srv.Engine.Group("/admin")
@@ -385,14 +400,26 @@ func (srv *MService) ServeHTTP() {
 		})
 
 		admin.GET("/users", func(c *gin.Context) {
+			users := minioth.Select("users")
+			jsonUsers, err := json.Marshal(users)
+			if err != nil {
+				log.Printf("failed to marsahl users: %v", err)
+				c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to marshal result"})
+			}
 			c.JSON(http.StatusOK, gin.H{
-				"content": minioth.Select("users"),
+				"content": jsonUsers,
 			})
 		})
 
 		admin.GET("/groups", func(c *gin.Context) {
+			groups := minioth.Select("htoups")
+			jsonGroups, err := json.Marshal(groups)
+			if err != nil {
+				log.Printf("failed to marsahl groups: %v", err)
+				c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to marshal result"})
+			}
 			c.JSON(http.StatusOK, gin.H{
-				"content": minioth.Select("groups"),
+				"content": jsonGroups,
 			})
 		})
 
