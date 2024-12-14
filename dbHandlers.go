@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -87,11 +88,11 @@ func (m *DBHandler) insertRootUser(user User, db *sql.DB) error {
 
 	passwordQuery := `
     INSERT INTO 
-        passwords (uid, hashpass, lastPasswordChange, minimumPasswordAge, maximumPasswordAge, warningPeriod, inactivityPeriod, expirationDate, passwordLength) 
+        passwords (uid, hashpass, lastPasswordChange, minimumPasswordAge, maximumPasswordAge, warningPeriod, inactivityPeriod, expirationDate) 
     VALUES 
-        (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+        (?, ?, ?, ?, ?, ?, ?, ?)`
 	_, err = tx.Exec(passwordQuery, user.Uid, hashPass, user.Password.LastPasswordChange, user.Password.MinPasswordAge,
-		user.Password.MaxPasswordAge, user.Password.WarningPeriod, user.Password.InactivityPeriod, user.Password.ExpirationDate, len(user.Password.Hashpass))
+		user.Password.MaxPasswordAge, user.Password.WarningPeriod, user.Password.InactivityPeriod, user.Password.ExpirationDate)
 	if err != nil {
 		tx.Rollback()
 		return fmt.Errorf("failed to insert root password: %w", err)
@@ -245,8 +246,8 @@ func (m *DBHandler) Useradd(user User) error {
 	log.Print("inserting password!")
 	passwordQuery := `
   INSERT INTO
-    passwords (uid, hashpass, lastpasswordchange, minimumpasswordage, maximumpasswordage, warningperiod, inactivityperiod, expirationdate, passwordlength)
-  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    passwords (uid, hashpass, lastpasswordchange, minimumpasswordage, maximumpasswordage, warningperiod, inactivityperiod, expirationdate)
+  VALUES (?, ?, ?, ?, ?, ?, ?, ?)
   `
 
 	usergroupQuery := `
@@ -270,7 +271,7 @@ func (m *DBHandler) Useradd(user User) error {
 
 	log.Print("executing password query...")
 	_, err = tx.Exec(passwordQuery, user.Uid, hashPass, user.Password.LastPasswordChange, user.Password.MinPasswordAge,
-		user.Password.MaxPasswordAge, user.Password.WarningPeriod, user.Password.InactivityPeriod, user.Password.ExpirationDate, len(user.Password.Hashpass))
+		user.Password.MaxPasswordAge, user.Password.WarningPeriod, user.Password.InactivityPeriod, user.Password.ExpirationDate)
 	if err != nil {
 		tx.Rollback()
 		log.Printf("failed to execute query: %v", err)
@@ -288,6 +289,11 @@ func (m *DBHandler) Useradd(user User) error {
 
 func (m *DBHandler) Userdel(uid string) error {
 	log.Printf("Deleting user with id: %s", uid)
+	if err := checkIfRoot(uid); err != nil {
+		log.Print("can't delete the root...")
+		return fmt.Errorf("deleting the root?", nil)
+	}
+
 	db, err := m.getConn()
 	if err != nil {
 		log.Printf("failed to get db conn: %v", err)
@@ -299,9 +305,9 @@ func (m *DBHandler) Userdel(uid string) error {
 	deletePasswordQuery := `DELETE FROM passwords WHERE uid = ?`
 	deleteUserGroupQuery := `DELETE FROM user_groups WHERE uid = ?`
 
-	_, err = db.Exec(deleteUserQuery, uid)
+	_, err = db.Exec(deleteUserGroupQuery, uid)
 	if err != nil {
-		log.Printf("error, failed to delete user: %v", err)
+		log.Printf("error, failed to delete usergroups: %v", err)
 		return err
 	}
 
@@ -311,17 +317,56 @@ func (m *DBHandler) Userdel(uid string) error {
 		return err
 	}
 
-	_, err = db.Exec(deleteUserGroupQuery, uid)
+	res, err := db.Exec(deleteUserQuery, uid)
 	if err != nil {
-		log.Printf("error, failed to delete usergroups: %v", err)
+		log.Printf("error, failed to delete user: %v", err)
 		return err
+	}
+
+	rAffected, err := res.RowsAffected()
+	if err != nil {
+		log.Printf("failed to get the rows affected")
+		return err
+	}
+
+	if rAffected == 0 {
+		log.Print("no users were deleted")
+		return fmt.Errorf("user not found")
+	}
+
+	return nil
+}
+
+func (m *DBHandler) Userpatch(uid string, fields map[string]interface{}) error {
+	query := "UPDATE users SET "
+	args := []interface{}{}
+
+	for key, value := range fields {
+		if key == "uid" {
+			continue
+		}
+		query += fmt.Sprintf("%s = ?, ", key)
+		args = append(args, value)
+	}
+	query = strings.TrimSuffix(query, ", ") + " WHERE uid = ?"
+	args = append(args, uid)
+
+	db, err := m.getConn()
+	if err != nil {
+		return fmt.Errorf("failed to connect to db: %w", err)
+	}
+	defer db.Close()
+
+	_, err = db.Exec(query, args...)
+	if err != nil {
+		return fmt.Errorf("failed to execute update query: %w", err)
 	}
 
 	return nil
 }
 
 func (m *DBHandler) Usermod(user User) error {
-	log.Printf("updating user %v", user.toString())
+	log.Printf("updating userid %v", user.Uid)
 	db, err := m.getConn()
 	if err != nil {
 		log.Printf("failed to get db conn: %v", err)
@@ -329,24 +374,85 @@ func (m *DBHandler) Usermod(user User) error {
 	}
 	defer db.Close()
 
+	// delete the previous user group relations
+	deleteUserGroupsQuery := `
+    DELETE FROM user_groups 
+    WHERE uid = ?;
+  `
+	_, err = db.Exec(deleteUserGroupsQuery, user.Uid)
+	if err != nil {
+		log.Printf("failed to delete user-group associations: %v", err)
+		return fmt.Errorf("failed to delete user-group associations: %w", err)
+	}
+
+	var currPass Password
+	res, err := db.Query("SELECT * FROM passwords WHERE uid = ?;", user.Uid)
+	if err != nil {
+		log.Printf("failed to select the password: %v", err)
+		return err
+	}
+	defer res.Close()
+
+	for res.Next() {
+		err = res.Scan(&currPass.U, &currPass.Hashpass, &currPass.LastPasswordChange, &currPass.MinPasswordAge, &currPass.MaxPasswordAge, &currPass.WarningPeriod, &currPass.InactivityPeriod, &currPass.ExpirationDate)
+		if err != nil {
+			log.Printf("failed to scan curr pass: %v", err)
+			return err
+		}
+	}
+
 	updateQuery := `
     UPDATE 
-      users u
+      users 
     SET 
-      u.username = ?, u.info = ?, u.home = ?, u.shell = ?, u.pgroup = ? 
+      username = ?, info = ?, home = ?, shell = ?   
     WHERE 
-      u.uid = ?;
+      uid = ?;
   `
 
-	_, err = db.Exec(updateQuery, user.Name, user.Info, user.Home, user.Shell, user.Pgroup, user.Uid)
+	_, err = db.Exec(updateQuery, user.Name, user.Info, user.Home, user.Shell, user.Uid)
 	if err != nil {
-		log.Printf("failed to execute query: %v", err)
-		return nil
+		log.Printf("failed to execute update user query: %v", err)
+		return fmt.Errorf("failed to update user %w", err)
 	}
 
-	if len(user.Groups) > 0 {
+	// reinsert related password
+	ipass := `
+  INSERT INTO
+    passwords (uid, hashpass, lastpasswordchange, minimumpasswordage, maximumpasswordage, warningperiod, inactivityperiod, expirationdate)
+  VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+  `
+
+	_, err = db.Exec(ipass, user.Uid, currPass.Hashpass, currPass.LastPasswordChange, currPass.MinPasswordAge, currPass.MaxPasswordAge, currPass.WarningPeriod, currPass.InactivityPeriod, currPass.ExpirationDate)
+	if err != nil {
+		log.Printf("failed to re-insert password..:%v", err)
+		return err
 	}
 
+	ugroupQuery := `
+    INSERT INTO 
+      user_groups ug (ug.uid, ug.gid)
+    VALUES `
+	var params []interface{}
+	for index, group := range user.Groups {
+		ugroupQuery += "(?, ?)"
+		if index < len(user.Groups)-1 {
+			ugroupQuery += ",\n"
+		}
+		params = append(params, user.Uid)
+		params = append(params, group.Gid)
+	}
+
+	_, err = db.Exec(ugroupQuery, params...)
+	if err != nil {
+		log.Printf("failed to execute insert ugroup query: %v", err)
+		return fmt.Errorf("failed to execute query: %w", err)
+	}
+
+	return nil
+}
+
+func (m *DBHandler) Grouppatch(gid string, fields map[string]interface{}) error {
 	return nil
 }
 
@@ -548,7 +654,7 @@ func (m *DBHandler) Select(id string) []interface{} {
         g.gid, g.groupname, GROUP_CONCAT(u.username) as users
       FROM 
         groups g
-      LEFT JOIN user_groups ug ON ug.gid = g.gid
+      LEFT JOIN user_groups ug ON g.gid = ug.gid
       LEFT JOIN users u ON u.uid = ug.uid
       GROUP BY 
         g.gid, g.groupname;
@@ -559,6 +665,13 @@ func (m *DBHandler) Select(id string) []interface{} {
 			return nil
 		}
 		defer rows.Close()
+
+		cols, err := rows.Columns()
+		if err != nil {
+			log.Print(err)
+		} else {
+			log.Print(cols)
+		}
 
 		for rows.Next() {
 			var group Group
@@ -720,4 +833,17 @@ func (m *DBHandler) nextId(table string) (int, error) {
 	}
 
 	return nextUid, nil
+}
+
+func checkIfRoot(uid string) error {
+	iuid, err := strconv.Atoi(uid)
+	if err != nil {
+		log.Printf("failed to atoi: %v", err)
+		return err
+	}
+
+	if iuid == 0 {
+		return fmt.Errorf("indeed root", nil)
+	}
+	return nil
 }

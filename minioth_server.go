@@ -2,7 +2,6 @@ package minioth
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
@@ -24,6 +23,7 @@ const (
 	DEFAULT_conf_name      string = "minioth.env"
 	DEFAULT_conf_path      string = "configs/"
 	DEFAULT_audit_log_path string = "data/minioth.log"
+	VERSION                       = ""
 )
 
 /*
@@ -96,7 +96,7 @@ func (srv *MService) ServeHTTP() {
 			"status": "alive.",
 		})
 	})
-	apiV1 := srv.Engine.Group("/v1")
+	apiV1 := srv.Engine.Group(VERSION)
 	{
 		apiV1.POST("/register", func(c *gin.Context) {
 			var uclaim RegisterClaim
@@ -121,7 +121,7 @@ func (srv *MService) ServeHTTP() {
 			// Check for uniquness [ NOTE: Now its done internally ]
 
 			// Proceed with Registration
-			err = srv.Minioth.Useradd(uclaim.User)
+			err = minioth.Useradd(uclaim.User)
 			if err != nil {
 				log.Print("failed to add user")
 				if strings.Contains(strings.ToLower(err.Error()), "duplicate") {
@@ -161,7 +161,7 @@ func (srv *MService) ServeHTTP() {
 				return
 			}
 
-			groups, err := srv.Minioth.Authenticate(lclaim.Username, lclaim.Password)
+			groups, err := minioth.Authenticate(lclaim.Username, lclaim.Password)
 			if err != nil {
 				log.Printf("error: %v", err)
 				if strings.Contains(err.Error(), "not found") {
@@ -401,25 +401,17 @@ func (srv *MService) ServeHTTP() {
 
 		admin.GET("/users", func(c *gin.Context) {
 			users := minioth.Select("users")
-			jsonUsers, err := json.Marshal(users)
-			if err != nil {
-				log.Printf("failed to marsahl users: %v", err)
-				c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to marshal result"})
-			}
+
 			c.JSON(http.StatusOK, gin.H{
-				"content": jsonUsers,
+				"content": users,
 			})
 		})
 
 		admin.GET("/groups", func(c *gin.Context) {
-			groups := minioth.Select("htoups")
-			jsonGroups, err := json.Marshal(groups)
-			if err != nil {
-				log.Printf("failed to marsahl groups: %v", err)
-				c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to marshal result"})
-			}
+			groups := minioth.Select("groups")
+
 			c.JSON(http.StatusOK, gin.H{
-				"content": jsonGroups,
+				"content": groups,
 			})
 		})
 
@@ -435,7 +427,7 @@ func (srv *MService) ServeHTTP() {
 				return
 			}
 
-			err = srv.Minioth.Useradd(uclaim.User)
+			err = minioth.Useradd(uclaim.User)
 			if err != nil {
 				log.Print("failed to add user")
 				if strings.Contains(strings.ToLower(err.Error()), "duplicate") {
@@ -457,12 +449,70 @@ func (srv *MService) ServeHTTP() {
 		})
 
 		admin.DELETE("/userdel", func(c *gin.Context) {
+			uid := c.Query("uid")
+			if uid == "" {
+				c.JSON(http.StatusBadRequest, gin.H{"error": "uid is required"})
+				return
+			}
+
+			err := minioth.Userdel(uid)
+			if err != nil {
+				if strings.Contains(err.Error(), "not found") {
+					c.JSON(http.StatusNotFound, gin.H{"error": "user not found"})
+				} else if strings.Contains(err.Error(), "root") {
+					c.JSON(400, gin.H{"error": "really bro?"})
+				} else {
+					c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to delete user"})
+				}
+
+				return
+			}
+
+			c.JSON(http.StatusOK, gin.H{"message": "user deleted successfully"})
+		})
+
+		admin.PATCH("/userpatch", func(c *gin.Context) {
+			var updateFields map[string]interface{}
+			if err := c.ShouldBindJSON(&updateFields); err != nil {
+				c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request body"})
+				return
+			}
+
+			uid, ok := updateFields["uid"].(string)
+			if !ok {
+				c.JSON(http.StatusBadRequest, gin.H{"error": "uid is required"})
+				return
+			}
+
+			err := minioth.Userpatch(uid, updateFields)
+			if err != nil {
+				c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to update user"})
+				return
+			}
+
+			c.JSON(http.StatusOK, gin.H{"message": "user patched successfully"})
 		})
 
 		admin.PUT("/usermod", func(c *gin.Context) {
+			var ruser RegisterClaim
+			if err := c.ShouldBindJSON(&ruser); err != nil {
+				c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request body"})
+				return
+			}
+
+			err := minioth.Usermod(ruser.User)
+			if err != nil {
+				c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to update user"})
+				return
+			}
+
+			c.JSON(http.StatusOK, gin.H{"message": "User updated successfully"})
 		})
 
 		admin.POST("/groupadd", func(c *gin.Context) {
+		})
+
+		admin.PATCH("/grouppatch", func(c *gin.Context) {
 		})
 
 		admin.PUT("/groupmod", func(c *gin.Context) {

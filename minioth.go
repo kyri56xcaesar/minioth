@@ -26,10 +26,12 @@ type MiniothHandler interface {
 	Useradd(user User) error
 	Userdel(uid string) error
 	Usermod(user User) error
+	Userpatch(uid string, fields map[string]interface{}) error
 
 	Groupadd(group Group) error
 	Groupdel(gid string) error
 	Groupmod(group Group) error
+	Grouppatch(gid string, fields map[string]interface{}) error
 
 	Passwd(username, password string) error
 
@@ -39,12 +41,12 @@ type MiniothHandler interface {
 }
 
 type User struct {
-	Groups   []Group  `json:"groups"`
 	Name     string   `json:"username" form:"username"`
 	Info     string   `json:"info" form:"info"`
 	Home     string   `json:"home" form:"home"`
 	Shell    string   `json:"shell" form:"shell"`
 	Password Password `json:"password"`
+	Groups   []Group  `json:"groups"`
 	Uid      int      `json:"uid"`
 	Pgroup   int      `json:"pgroup"`
 }
@@ -59,8 +61,8 @@ type Password struct {
 }
 type Group struct {
 	Name  string `json:"groupname" form:"groupname"`
-	Users []User
-	Gid   int `json:"gid" form:"gid"`
+	Users []User `json:"users" form:"users"`
+	Gid   int    `json:"gid" form:"gid"`
 }
 
 /* use bcrypt blowfish algo (and std lib) to hash a byte array */
@@ -123,6 +125,10 @@ func (m *Minioth) Usermod(user User) error {
 	return m.handler.Usermod(user)
 }
 
+func (m *Minioth) Userpatch(uid string, fields map[string]interface{}) error {
+	return m.handler.Userpatch(uid, fields)
+}
+
 func (m *Minioth) Groupadd(group Group) error {
 	return m.handler.Groupadd(group)
 }
@@ -133,6 +139,10 @@ func (m *Minioth) Groupdel(groupname string) error {
 
 func (m *Minioth) Groupmod(group Group) error {
 	return m.handler.Groupmod(group)
+}
+
+func (m *Minioth) Grouppatch(gid string, fields map[string]interface{}) error {
+	return m.handler.Grouppatch(gid, fields)
 }
 
 func (m *Minioth) Passwd(username, password string) error {
@@ -150,8 +160,8 @@ func (m *Minioth) Authenticate(username, password string) ([]Group, error) {
 /* check password fields for allowed values...*/
 func (p *Password) validatePassword() error {
 	// Validate Password Length
-	if len(p.Hashpass) < 8 {
-		return fmt.Errorf("password length '%d' is too short: minimum required length is 8 characters", len(p.Hashpass))
+	if len(p.Hashpass) < 4 {
+		return fmt.Errorf("password length '%d' is too short: minimum required length is 4 characters", len(p.Hashpass))
 	}
 
 	// Validate Hashpass

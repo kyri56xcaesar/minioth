@@ -178,11 +178,19 @@ func (m *PlainHandler) Usermod(user User) error {
 	return nil
 }
 
+func (m *PlainHandler) Userpatch(uid string, fields map[string]interface{}) error {
+	return nil
+}
+
 func (m *PlainHandler) Groupadd(group Group) error {
 	return nil
 }
 
 func (m *PlainHandler) Groupdel(groupname string) error {
+	return nil
+}
+
+func (m *PlainHandler) Grouppatch(gid string, fields map[string]interface{}) error {
 	return nil
 }
 
