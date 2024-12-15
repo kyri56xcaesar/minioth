@@ -291,6 +291,9 @@ func (m *PlainHandler) Authenticate(username, password string) ([]Group, error) 
 	}
 }
 
+func (p *PlainHandler) Close() {
+}
+
 // Unused
 func checkIfUserExists(u User) error {
 	log.Printf("Checking if name:%s, already exists...", u.Name)

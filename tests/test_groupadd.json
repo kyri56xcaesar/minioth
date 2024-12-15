@@ -1,0 +1,6 @@
+{
+  "groupname": "docker",
+  "users": [
+    { "uid": 1000 }
+  ]
+}

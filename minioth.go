@@ -38,6 +38,8 @@ type MiniothHandler interface {
 	Select(id string) []interface{}
 
 	Authenticate(username, password string) ([]Group, error)
+
+	Close()
 }
 
 type User struct {

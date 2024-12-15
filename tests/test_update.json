@@ -1,0 +1,20 @@
+{
+  "user":{
+    "username":"gklagljkas",
+    "info":"kchalv@minioth.com",
+    "home":"ssss",
+    "shell":"gshell",
+    "password":{
+      "hashpass":"agasgasgasgas",
+      "lastPasswordChange":"",
+      "minimumPasswordAge":"",
+      "maximumPasswordAge":"",
+      "warningPeriod":"",
+      "inacticityPeriod":"",
+      "expirationDate":"",
+      "passwordLength":10
+    },
+    "uid":1000,
+    "pgroup":1000
+  }
+}

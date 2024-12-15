@@ -1,5 +1,7 @@
 package minioth
 
+/* TODO: test: grouppatch, groupmod, passwd*/
+
 import (
 	"context"
 	"errors"
@@ -124,7 +126,7 @@ func (srv *MService) ServeHTTP() {
 			err = minioth.Useradd(uclaim.User)
 			if err != nil {
 				log.Print("failed to add user")
-				if strings.Contains(strings.ToLower(err.Error()), "duplicate") {
+				if strings.Contains(strings.ToLower(err.Error()), "alr") {
 					c.JSON(403, gin.H{"error": "already exists!"})
 				} else {
 					c.JSON(400, gin.H{
@@ -382,13 +384,30 @@ func (srv *MService) ServeHTTP() {
 				return
 			}
 
+			pass := Password{
+				Hashpass: lclaim.Password,
+			}
 			// Verify user credentials
 			if lclaim.Password == "" {
 				c.JSON(400, gin.H{
-					"error": "bad password",
+					"error": "no password provided",
+				})
+				return
+			} else if err := pass.validatePassword(); err != nil {
+				c.JSON(400, gin.H{
+					"error": err.Error(),
 				})
 				return
 			}
+
+			err = minioth.Passwd(lclaim.Username, lclaim.Password)
+			if err != nil {
+				log.Printf("failed to change password: %v", err)
+				c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to change password"})
+				return
+			}
+
+			c.JSON(200, gin.H{"status": "password changed successfully"})
 		})
 	}
 
@@ -510,15 +529,74 @@ func (srv *MService) ServeHTTP() {
 		})
 
 		admin.POST("/groupadd", func(c *gin.Context) {
+			var group Group
+			if err := c.ShouldBindJSON(&group); err != nil {
+				log.Printf("Invalid group data: %v", err)
+				c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid group data"})
+				return
+			}
+
+			if err := minioth.Groupadd(group); err != nil {
+				log.Printf("Failed to add group: %v", err)
+				c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to add group"})
+				return
+			}
+
+			c.JSON(http.StatusCreated, gin.H{"message": "Group added successfully"})
 		})
 
 		admin.PATCH("/grouppatch", func(c *gin.Context) {
+			var payload struct {
+				Fields map[string]interface{} `json:"fields" binding:"required"`
+				Gid    string                 `json:"gid" binding:"required"`
+			}
+			if err := c.ShouldBindJSON(&payload); err != nil {
+				log.Printf("Invalid patch payload: %v", err)
+				c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid patch payload"})
+				return
+			}
+
+			if err := minioth.Grouppatch(payload.Gid, payload.Fields); err != nil {
+				log.Printf("Failed to patch group: %v", err)
+				c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to patch group"})
+				return
+			}
+
+			c.JSON(http.StatusOK, gin.H{"message": "Group patched successfully"})
 		})
 
 		admin.PUT("/groupmod", func(c *gin.Context) {
+			var group Group
+			if err := c.ShouldBindJSON(&group); err != nil {
+				log.Printf("Invalid group data: %v", err)
+				c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid group data"})
+				return
+			}
+
+			if err := minioth.Groupmod(group); err != nil {
+				log.Printf("Failed to modify group: %v", err)
+				c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to modify group"})
+				return
+			}
+
+			c.JSON(http.StatusOK, gin.H{"message": "Group modified successfully"})
 		})
 
 		admin.DELETE("/groupdel", func(c *gin.Context) {
+			gid := c.Query("gid")
+			if gid == "" {
+				log.Print("gid is required")
+				c.JSON(http.StatusBadRequest, gin.H{"error": "gid is required"})
+				return
+			}
+
+			if err := minioth.Groupdel(gid); err != nil {
+				log.Printf("Failed to delete group: %v", err)
+				c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to delete group"})
+				return
+			}
+
+			c.JSON(http.StatusOK, gin.H{"message": "Group deleted successfully"})
 		})
 	}
 
@@ -537,6 +615,9 @@ func (srv *MService) ServeHTTP() {
 		}
 	}()
 	<-ctx.Done()
+
+	log.Print("closing db connection...")
+	handler.Close()
 
 	stop()
 	log.Println("shutting down gracefully, press Ctrl+C again to force")
