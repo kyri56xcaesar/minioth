@@ -72,6 +72,10 @@ func hash(password []byte) ([]byte, error) {
 	return bcrypt.GenerateFromPassword(password, HASH_COST)
 }
 
+func hash_cost(password []byte, cost int) ([]byte, error) {
+	return bcrypt.GenerateFromPassword(password, cost)
+}
+
 /* check if a passowrd is correct */
 func verifyPass(hashedPass, password []byte) bool {
 	if err := bcrypt.CompareHashAndPassword(hashedPass, password); err == nil {

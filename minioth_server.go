@@ -414,6 +414,33 @@ func (srv *MService) ServeHTTP() {
 	admin := srv.Engine.Group("/admin")
 	admin.Use(AuthMiddleware("admin"))
 	{
+		admin.POST("/hasher", func(c *gin.Context) {
+			var b struct {
+				HashAlg  string `json:"hashalg"`
+				HashText string `json:"hash"`
+				Text     string `json:"text"`
+				HashCost int    `json:"hashcost"`
+			}
+			err := c.BindJSON(&b)
+			if err != nil {
+				log.Printf("error binding request body to struct: %v", err)
+				c.JSON(400, gin.H{"error": "binding"})
+				return
+			}
+
+			hashed, err := hash_cost([]byte(b.Text), b.HashCost)
+			if err != nil {
+				log.Printf("error hasing the text: %v", err)
+				c.JSON(500, gin.H{"error": "hashing"})
+				return
+			}
+
+			if b.HashText == "" {
+				c.JSON(200, gin.H{"result": string(hashed)})
+			} else {
+				c.JSON(200, gin.H{"result": strconv.FormatBool(verifyPass([]byte(b.HashText), []byte(b.Text)))})
+			}
+		})
 
 		admin.GET("/audit/logs", func(c *gin.Context) {
 		})
