@@ -52,6 +52,11 @@ type User struct {
 	Uid      int      `json:"uid"`
 	Pgroup   int      `json:"pgroup"`
 }
+
+func (u *User) PtrFields() []any {
+	return []any{&u.Name, &u.Info, &u.Home, &u.Shell, &u.Uid, &u.Pgroup}
+}
+
 type Password struct {
 	Hashpass           string `json:"hashpass"`
 	LastPasswordChange string `json:"lastPasswordChange"`
@@ -61,10 +66,19 @@ type Password struct {
 	InactivityPeriod   string `json:"inactivityPeriod"`
 	ExpirationDate     string `json:"expirationDate"`
 }
+
+func (p *Password) PtrFields() []any {
+	return []any{&p.Hashpass, &p.LastPasswordChange, &p.MinPasswordAge, &p.MaxPasswordAge, &p.WarningPeriod, &p.InactivityPeriod, &p.ExpirationDate}
+}
+
 type Group struct {
 	Name  string `json:"groupname" form:"groupname"`
 	Users []User `json:"users" form:"users"`
 	Gid   int    `json:"gid" form:"gid"`
+}
+
+func (g *Group) PtrFields() []any {
+	return []any{&g.Name, &g.Gid}
 }
 
 /* use bcrypt blowfish algo (and std lib) to hash a byte array */

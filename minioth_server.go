@@ -520,18 +520,21 @@ func (srv *MService) ServeHTTP() {
 		admin.PATCH("/userpatch", func(c *gin.Context) {
 			var updateFields map[string]interface{}
 			if err := c.ShouldBindJSON(&updateFields); err != nil {
+				log.Printf("failed to bind req body: %v", err)
 				c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request body"})
 				return
 			}
 
 			uid, ok := updateFields["uid"].(string)
-			if !ok {
+			if !ok || uid == "" {
+				log.Printf("uid is not ok: %v", uid)
 				c.JSON(http.StatusBadRequest, gin.H{"error": "uid is required"})
 				return
 			}
 
 			err := minioth.Userpatch(uid, updateFields)
 			if err != nil {
+				log.Printf("failed to patch user: %v", err)
 				c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to update user"})
 				return
 			}

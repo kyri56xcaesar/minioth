@@ -209,13 +209,12 @@ func (m *DBHandler) Init() {
 }
 
 func (m *DBHandler) Useradd(user User) error {
-	log.Printf("Inserting user %+v", user)
+	log.Printf("Inserting user %q", user.Name)
 	db, err := m.getConn()
 	if err != nil {
 		return err
 	}
 
-	log.Print("beginning transaction...")
 	tx, err := db.Begin()
 	if err != nil {
 		log.Printf("failed to begin transaction: %v", err)
@@ -242,7 +241,6 @@ func (m *DBHandler) Useradd(user User) error {
     (?, ?, ?, ?, ?, ?)
   `
 
-	log.Print("fetching next uid...")
 	user.Uid, err = m.nextId("users")
 	if err != nil {
 		log.Printf("failed to retrieve the next avaible uid: %v", err)
@@ -252,7 +250,6 @@ func (m *DBHandler) Useradd(user User) error {
 
 	log.Printf("uid fetched: %v", user.Uid)
 
-	log.Print("executing query...")
 	_, err = tx.Exec(userQuery, user.Uid, user.Name, user.Info, user.Home, user.Shell, user.Pgroup)
 	if err != nil {
 		log.Printf("failed to execute query: %v", err)
@@ -260,7 +257,6 @@ func (m *DBHandler) Useradd(user User) error {
 		return err
 	}
 
-	log.Print("inserting password!")
 	passwordQuery := `
   INSERT INTO
     passwords (uid, hashpass, lastpasswordchange, minimumpasswordage, maximumpasswordage, warningperiod, inactivityperiod, expirationdate)
@@ -286,7 +282,6 @@ func (m *DBHandler) Useradd(user User) error {
 		return err
 	}
 
-	log.Print("executing password query...")
 	_, err = tx.Exec(passwordQuery, user.Uid, hashPass, user.Password.LastPasswordChange, user.Password.MinPasswordAge,
 		user.Password.MaxPasswordAge, user.Password.WarningPeriod, user.Password.InactivityPeriod, user.Password.ExpirationDate)
 	if err != nil {
@@ -295,7 +290,6 @@ func (m *DBHandler) Useradd(user User) error {
 		return err
 	}
 
-	log.Print("committing transaction...")
 	if err := tx.Commit(); err != nil {
 		log.Printf("failed to commit transaction: %v", err)
 		return err
@@ -450,7 +444,6 @@ func (m *DBHandler) Usermod(user User) error {
 		return fmt.Errorf("failed to commit transaction: %w", err)
 	}
 
-	log.Printf("User with uid %v updated successfully", user.Uid)
 	return nil
 }
 
@@ -460,13 +453,20 @@ func (m *DBHandler) Userpatch(uid string, fields map[string]interface{}) error {
 	query := "UPDATE users SET "
 	args := []interface{}{}
 
+	var groups interface{}
 	for key, value := range fields {
 		if key == "uid" {
 			continue
 		}
+		if key == "groups" {
+			groups = fields[key]
+			continue
+		}
+
 		query += fmt.Sprintf("%s = ?, ", key)
 		args = append(args, value)
 	}
+	log.Printf("groups: %+v", groups)
 	query = strings.TrimSuffix(query, ", ") + " WHERE uid = ?"
 	args = append(args, uid)
 
@@ -477,6 +477,11 @@ func (m *DBHandler) Userpatch(uid string, fields map[string]interface{}) error {
 	_, err = db.Exec(query, args...)
 	if err != nil {
 		return fmt.Errorf("failed to execute update query: %w", err)
+	}
+
+	// if groups arg is here, we need to update the relation
+	if groups != nil {
+		log.Print("inserting user group relation...")
 	}
 
 	return nil
@@ -542,8 +547,6 @@ func (m *DBHandler) Groupadd(group Group) error {
 			return err
 		}
 	}
-
-	log.Print("successfully added group and group relations")
 
 	return nil
 }
@@ -725,13 +728,16 @@ func (m *DBHandler) Select(id string) []interface{} {
 
 		userQuery := `
       SELECT  
-        u.uid, u.username, u.info, u.home, u.shell, u.pgroup, GROUP_CONCAT(g.groupname) as groups
+        u.uid, u.username, p.hashpass, p.lastPasswordChange, p.minimumPasswordAge,
+        p.maximumPasswordAge, p.warningPeriod, p.inactivityPeriod, p.expirationDate,
+        u.info, u.home, u.shell, u.pgroup, GROUP_CONCAT(g.groupname) as groups
       FROM 
         users u
+      LEFT JOIN passwords p ON p.uid = u.uid
       LEFT JOIN user_groups ug ON ug.uid = u.uid
       LEFT JOIN groups g ON g.gid = ug.gid
       GROUP BY 
-        u.uid, u.username, u.info, u.home, u.shell, u.pgroup;
+        u.uid, u.username, u.info, u.home, u.shell, u.pgroup, p.hashpass, p.lastPasswordChange, p.minimumPasswordAge, p.maximumPasswordAge, p.warningPeriod, p.inactivityPeriod, p.expirationDate;
     `
 		rows, err := db.Query(userQuery)
 		if err != nil {
@@ -743,7 +749,7 @@ func (m *DBHandler) Select(id string) []interface{} {
 		for rows.Next() {
 			var user User
 			var groupNames sql.NullString // Use sql.NullString to handle NULL values
-			err := rows.Scan(&user.Uid, &user.Name, &user.Info, &user.Home, &user.Shell, &user.Pgroup, &groupNames)
+			err := rows.Scan(&user.Uid, &user.Name, &user.Password.Hashpass, &user.Password.LastPasswordChange, &user.Password.MinPasswordAge, &user.Password.MaxPasswordAge, &user.Password.WarningPeriod, &user.Password.InactivityPeriod, &user.Password.ExpirationDate, &user.Info, &user.Home, &user.Shell, &user.Pgroup, &groupNames)
 			if err != nil {
 				log.Printf("failed to scan user: %v", err)
 				return nil
@@ -785,13 +791,6 @@ func (m *DBHandler) Select(id string) []interface{} {
 		}
 		defer rows.Close()
 
-		cols, err := rows.Columns()
-		if err != nil {
-			log.Print(err)
-		} else {
-			log.Print(cols)
-		}
-
 		for rows.Next() {
 			var group Group
 			var userNames sql.NullString
@@ -801,7 +800,8 @@ func (m *DBHandler) Select(id string) []interface{} {
 				return nil
 			}
 
-			// Parse user names into User structs
+			// Parse user names into dummy User structs
+
 			users := []User{}
 			if userNames.Valid && userNames.String != "" {
 				userNameList := strings.Split(userNames.String, ",")
