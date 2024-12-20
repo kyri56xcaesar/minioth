@@ -525,16 +525,43 @@ func (srv *MService) ServeHTTP() {
 				return
 			}
 
-			uid, ok := updateFields["uid"].(string)
-			if !ok || uid == "" {
-				log.Printf("uid is not ok: %v", uid)
+			uidValue, ok := updateFields["uid"]
+			if !ok {
+				log.Printf("uid is not ok: %v", uidValue)
 				c.JSON(http.StatusBadRequest, gin.H{"error": "uid is required"})
+				return
+			}
+			var uid string
+			switch v := uidValue.(type) {
+			case string:
+				uid = v
+			case float64:
+				uid = fmt.Sprintf("%.0f", v)
+			case int:
+				uid = strconv.Itoa(v)
+			default:
+				log.Printf("uid type not supported: %T", v)
+				c.JSON(http.StatusBadRequest, gin.H{"error": "invalid uid format"})
+				return
+			}
+
+			switch uid {
+			case "":
+				log.Print("empty uid")
+
+			case "0":
+				log.Print("sm1 is trying to change the root..")
+				c.JSON(400, gin.H{"error": "not allowed"})
 				return
 			}
 
 			err := minioth.Userpatch(uid, updateFields)
 			if err != nil {
 				log.Printf("failed to patch user: %v", err)
+				if err.Error() == "no inputs" {
+					c.JSON(404, gin.H{"error": "bad request"})
+					return
+				}
 				c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to update user"})
 				return
 			}

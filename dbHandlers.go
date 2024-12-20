@@ -167,6 +167,7 @@ func (m *DBHandler) Init() {
         groups (gid, groupname)
       VALUES 
         (0, 'admin'),
+        (100, 'mod'),
         (1000, 'user');`
 
 		_, err = db.Exec(query, nil)
@@ -448,40 +449,113 @@ func (m *DBHandler) Usermod(user User) error {
 }
 
 func (m *DBHandler) Userpatch(uid string, fields map[string]interface{}) error {
-	log.Printf("patching user with uid: %q", uid)
-	log.Printf("patching fields: %+v", fields)
 	query := "UPDATE users SET "
 	args := []interface{}{}
 
 	var groups interface{}
+	var password string
 	for key, value := range fields {
-		if key == "uid" {
+		switch key {
+		case "uid":
 			continue
-		}
-		if key == "groups" {
+
+		case "groups":
 			groups = fields[key]
 			continue
+		case "password":
+			password = fields[key].(string)
+		default:
+			if fields[key] == "" {
+				continue
+			}
+			query += fmt.Sprintf("%s = ?, ", key)
+			args = append(args, value)
 		}
-
-		query += fmt.Sprintf("%s = ?, ", key)
-		args = append(args, value)
 	}
-	log.Printf("groups: %+v", groups)
+
+	if len(args) == 0 {
+		return fmt.Errorf("no inputs")
+	}
 	query = strings.TrimSuffix(query, ", ") + " WHERE uid = ?"
 	args = append(args, uid)
+
+	log.Printf("patching user with uid: %q", uid)
+	log.Printf("patching fields: %+v", args)
 
 	db, err := m.getConn()
 	if err != nil {
 		return fmt.Errorf("failed to connect to db: %w", err)
 	}
-	_, err = db.Exec(query, args...)
+	tx, err := db.Begin()
+	if err != nil {
+		log.Printf("failed to begin transaction: %v", err)
+		return fmt.Errorf("failed to begin transaction: %w", err)
+	}
+
+	_, err = tx.Exec(query, args...)
 	if err != nil {
 		return fmt.Errorf("failed to execute update query: %w", err)
 	}
 
 	// if groups arg is here, we need to update the relation
 	if groups != nil {
+		log.Print("deleting old group relations...")
+		_, err := tx.Exec("DELETE FROM user_groups WHERE uid = ?", uid)
+		if err != nil {
+			log.Printf("failed to delete old relations..:%v", err)
+			return fmt.Errorf("failed to delete old relations: %w", err)
+		}
+
+		groups := strings.Split(groups.(string), ",")       // Assuming `groups` is a string of comma-separated group names
+		placeholders := strings.Repeat(",?", len(groups)-1) // Create placeholders for additional groups
+
+		insQuery := `
+      INSERT INTO 
+          user_groups (uid, gid)
+      SELECT 
+          ?, gid
+      FROM 
+          groups
+      WHERE 
+          groupname IN (?` + placeholders + `)
+    `
+		args := []interface{}{uid}
+		for _, group := range groups {
+			args = append(args, strings.TrimSpace(group))
+		}
+
 		log.Print("inserting user group relation...")
+		res, err := tx.Exec(insQuery, args...)
+		if err != nil {
+			log.Printf("failed to insert user groups: %v", err)
+			return fmt.Errorf("failed to insert user groups: %w", err)
+		}
+
+		rowsAffected, _ := res.RowsAffected()
+		log.Printf("Rows affected: %d", rowsAffected)
+
+	}
+
+	if password != "" {
+		log.Print("updating password relation...")
+		pquery := `
+      UPDATE 
+        passwords 
+      SET 
+        hashpass = ?, lastpasswordchange = ?
+      WHERE 
+        uid = ?`
+
+		_, err = tx.Exec(pquery, password, time.Now(), uid)
+		if err != nil {
+			return fmt.Errorf("failed to update password: %w", err)
+		}
+	}
+
+	err = tx.Commit()
+	if err != nil {
+		log.Printf("failed to commit transaction: %v", err)
+		return fmt.Errorf("failed to commit transaction: %w", err)
 	}
 
 	return nil

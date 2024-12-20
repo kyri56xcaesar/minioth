@@ -16,7 +16,7 @@ func IsAlphanumeric(s string) bool {
 }
 
 func IsAlphanumericPlus(s string) bool {
-	re := regexp.MustCompile(`^[a-zA-Z0-9@]+$`)
+	re := regexp.MustCompile(`^[a-zA-Z0-9@_]+$`)
 	return re.MatchString(s)
 }
 

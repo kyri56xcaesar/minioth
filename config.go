@@ -100,6 +100,10 @@ func (cfg *EnvConfig) ToString() string {
 		fieldName := reflectedTypes.Field(i).Name
 		fieldValue := reflectedValues.Field(i).Interface()
 
+		if byteSlice, ok := fieldValue.([]byte); ok {
+			fieldValue = string(byteSlice)
+		}
+
 		strBuilder.WriteString("[CFG]")
 		if i < 9 {
 			strBuilder.WriteString(fmt.Sprintf("%d.  ", i+1))
