@@ -472,16 +472,6 @@ func (m *DBHandler) Userpatch(uid string, fields map[string]interface{}) error {
 			args = append(args, value)
 		}
 	}
-
-	if len(args) == 0 {
-		return fmt.Errorf("no inputs")
-	}
-	query = strings.TrimSuffix(query, ", ") + " WHERE uid = ?"
-	args = append(args, uid)
-
-	log.Printf("patching user with uid: %q", uid)
-	log.Printf("patching fields: %+v", args)
-
 	db, err := m.getConn()
 	if err != nil {
 		return fmt.Errorf("failed to connect to db: %w", err)
@@ -492,13 +482,23 @@ func (m *DBHandler) Userpatch(uid string, fields map[string]interface{}) error {
 		return fmt.Errorf("failed to begin transaction: %w", err)
 	}
 
-	_, err = tx.Exec(query, args...)
-	if err != nil {
-		return fmt.Errorf("failed to execute update query: %w", err)
+	if len(args) != 0 {
+		// Key patches
+		query = strings.TrimSuffix(query, ", ") + " WHERE uid = ?"
+		args = append(args, uid)
+
+		log.Printf("patching user with uid: %q", uid)
+		log.Printf("patching fields: %+v", args)
+
+		_, err = tx.Exec(query, args...)
+		if err != nil {
+			return fmt.Errorf("failed to execute update query: %w", err)
+		}
 	}
 
+	// group patch
 	// if groups arg is here, we need to update the relation
-	if groups != nil {
+	if len(groups.(string)) > 0 {
 		log.Print("deleting old group relations...")
 		_, err := tx.Exec("DELETE FROM user_groups WHERE uid = ?", uid)
 		if err != nil {
@@ -536,6 +536,7 @@ func (m *DBHandler) Userpatch(uid string, fields map[string]interface{}) error {
 
 	}
 
+	// password patch
 	if password != "" {
 		log.Print("updating password relation...")
 		pquery := `
