@@ -235,7 +235,7 @@ func (m *PlainHandler) Select(id string) []interface{} {
 }
 
 /* approval of minioth means, user exists and password is valid */
-func (m *PlainHandler) Authenticate(username, password string) ([]Group, error) {
+func (m *PlainHandler) Authenticate(username, password string) (*User, error) {
 	log.Printf("authenticating user... %q:%q", username, password)
 
 	file, err := os.Open(MINIOTH_PASSWD)
@@ -278,14 +278,8 @@ func (m *PlainHandler) Authenticate(username, password string) ([]Group, error) 
 
 	hashpass := strings.SplitN(passline, DEL, 3)[1]
 
-	groups, err := getGroups(username, gfile)
-	if err != nil {
-		log.Printf("failed to retrieve user groups: %v", err)
-		return nil, err
-	}
-
 	if verifyPass([]byte(hashpass), []byte(password)) {
-		return groups, nil
+		return nil, nil
 	} else {
 		return nil, fmt.Errorf("failed to authenticate, bad creds")
 	}

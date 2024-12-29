@@ -1,6 +1,6 @@
 package minioth
 
-/* TODO: test: grouppatch, groupmod, passwd*/
+/* Minioth server is responsible for listening */
 
 import (
 	"context"
@@ -26,6 +26,7 @@ const (
 	DEFAULT_conf_path      string = "configs/"
 	DEFAULT_audit_log_path string = "data/minioth.log"
 	VERSION                       = ""
+	JWT_VALIDITY_HOURS     int    = 1
 )
 
 /*
@@ -35,17 +36,29 @@ var (
 	handler       MiniothHandler
 	jwtSecretKey  = []byte("default_placeholder_key")
 	jwtRefreshKey = []byte("default_refresh_placeholder_key")
+
+	forbidden_names []string = []string{
+		"root",
+		"kubernetes",
+		"k8s",
+	}
 )
 
 /*
+* Structs
 *
-* Structs */
+* minioth server central object.
+* -> reference to a server engine
+* -> configuration
+* -> reference to minioth
+* */
 type MService struct {
 	Engine  *gin.Engine
 	Config  *EnvConfig
 	Minioth *Minioth
 }
 
+/* Incoming Register and Login requests binding structs */
 type RegisterClaim struct {
 	User User `json:"user"`
 }
@@ -55,15 +68,19 @@ type LoginClaim struct {
 	Password string `json:"password"`
 }
 
+/* JWT token signed claims.
+* what information the jwt will contain.
+* */
 type CustomClaims struct {
-	UserID string `json:"user_id"`
-	Groups string `json:"groups"`
+	UserID   string `json:"user_id"`
+	Username string `json:"username"`
+	Groups   string `json:"groups"`
 	jwt.RegisteredClaims
 }
 
 /*
 *
-* Functions and methods */
+* "constructor of minioth server central object" */
 func NewMSerivce(m *Minioth, conf string) MService {
 	cfg := LoadConfig(conf)
 	log.Print(cfg.ToString())
@@ -93,11 +110,6 @@ func NewMSerivce(m *Minioth, conf string) MService {
 func (srv *MService) ServeHTTP() {
 	minioth := srv.Minioth
 
-	srv.Engine.GET("/healthz", func(c *gin.Context) {
-		c.JSON(http.StatusOK, gin.H{
-			"status": "alive.",
-		})
-	})
 	apiV1 := srv.Engine.Group(VERSION)
 	{
 		apiV1.POST("/register", func(c *gin.Context) {
@@ -163,7 +175,7 @@ func (srv *MService) ServeHTTP() {
 				return
 			}
 
-			groups, err := minioth.Authenticate(lclaim.Username, lclaim.Password)
+			user, err := minioth.Authenticate(lclaim.Username, lclaim.Password)
 			if err != nil {
 				log.Printf("error: %v", err)
 				if strings.Contains(err.Error(), "not found") {
@@ -176,11 +188,11 @@ func (srv *MService) ServeHTTP() {
 				return
 			}
 
-			strGroups := groupsToString(groups)
+			strGroups := groupsToString(user.Groups)
 
 			// TODO: should upgrde the way I create users.. need to be able to create admins as well...
 			// or perhaps make the root admin be able to "promote" a user
-			token, err := GenerateAccessJWT(lclaim.Username, strGroups)
+			token, err := GenerateAccessJWT(strconv.Itoa(user.Uid), lclaim.Username, strGroups)
 			if err != nil {
 				log.Fatalf("failed generating jwt token: %v", err)
 			}
@@ -234,7 +246,7 @@ func (srv *MService) ServeHTTP() {
 				return
 			}
 
-			newAccessToken, err := GenerateAccessJWT(claims.UserID, claims.Groups)
+			newAccessToken, err := GenerateAccessJWT(claims.UserID, claims.Username, claims.Groups)
 			if err != nil {
 				log.Printf("error generating new access token: %v", err)
 				c.JSON(http.StatusInternalServerError, gin.H{
@@ -411,6 +423,7 @@ func (srv *MService) ServeHTTP() {
 		})
 	}
 
+	/* admin endpoints */
 	admin := srv.Engine.Group("/admin")
 	admin.Use(AuthMiddleware("admin"))
 	{
@@ -741,59 +754,7 @@ func AuthMiddleware(role string) gin.HandlerFunc {
 	}
 }
 
-func GenerateJWT(userID, groups string) (string, error) {
-	// Set the claims for the token
-	claims := CustomClaims{
-		UserID: userID,
-		Groups: groups,
-		RegisteredClaims: jwt.RegisteredClaims{
-			Issuer:    "minioth",
-			ExpiresAt: jwt.NewNumericDate(time.Now().Add(time.Hour * 24)), // Token expiration time (24 hours)
-			IssuedAt:  jwt.NewNumericDate(time.Now()),
-			Subject:   userID,
-		},
-	}
-
-	// Create the token using the HS256 signing method
-	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
-
-	// Sign the token using the secret key
-	tokenString, err := token.SignedString(jwtSecretKey)
-	if err != nil {
-		return "", fmt.Errorf("failed to sign token: %w", err)
-	}
-
-	return tokenString, nil
-}
-
-func VerifyJWT(tokenString string) (*CustomClaims, error) {
-	// Parse the token
-	token, err := jwt.ParseWithClaims(tokenString, &CustomClaims{}, func(token *jwt.Token) (interface{}, error) {
-		// Make sure the signing method is HMAC (HS256)
-		if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
-			return nil, fmt.Errorf("unexpected signing method: %v", token.Header["alg"])
-		}
-		return jwtSecretKey, nil
-	})
-	if err != nil {
-		return nil, fmt.Errorf("failed to parse token: %w", err)
-	}
-
-	// Extract claims if the token is valid
-	if claims, ok := token.Claims.(*CustomClaims); ok && token.Valid {
-		return claims, nil
-	}
-
-	return nil, fmt.Errorf("invalid token")
-}
-
-func offLimits(str string) bool {
-	if str == "root" || str == "kubernetes" {
-		return true
-	}
-	return false
-}
-
+/* Filter incoming login and register requests. Don't allow wierd chars...*/
 func (l *LoginClaim) validateClaim() error {
 	if l.Username == "" {
 		return errors.New("username cannot be empty")
@@ -844,15 +805,27 @@ func (u *RegisterClaim) validateUser() error {
 	return nil
 }
 
+/* functions */
+/* just a function to see if a given name is in input */
+func offLimits(str string) bool {
+	for _, name := range forbidden_names {
+		if str == name {
+			return true
+		}
+	}
+	return false
+}
+
 // jwt
-func GenerateAccessJWT(userID, groups string) (string, error) {
+func GenerateAccessJWT(userID, username, groups string) (string, error) {
 	// Set the claims for the token
 	claims := CustomClaims{
-		UserID: userID,
-		Groups: groups,
+		UserID:   userID,
+		Username: username,
+		Groups:   groups,
 		RegisteredClaims: jwt.RegisteredClaims{
 			Issuer:    "minioth",
-			ExpiresAt: jwt.NewNumericDate(time.Now().Add(time.Hour * 2)), // Token expiration time (24 hours)
+			ExpiresAt: jwt.NewNumericDate(time.Now().Add(time.Hour * time.Duration(JWT_VALIDITY_HOURS))),
 			IssuedAt:  jwt.NewNumericDate(time.Now()),
 			Subject:   userID,
 		},

@@ -10,17 +10,24 @@ import (
 	"golang.org/x/crypto/bcrypt"
 )
 
-/* I want to implement a simplistic but handy user/group state system.
-* Let's copy the UNIX model
-*
-* /etc/passwd, /etc/shadow, /etc/group
-*
+/*
 * WARNING: don't use the plain handler.
-*
  */
 
+/* hash cost for bcrypt hash function, reconfigurable from config*/
 var HASH_COST int = 16
 
+/*
+*
+* */
+type Minioth struct {
+	handler MiniothHandler
+	root    User /* perhaps we dont need to hold a ref to this, but each Minioth should have a root user. Its handled on init*/
+}
+
+/* each minioth instance consists of a handler which
+*  implements this interface.
+* */
 type MiniothHandler interface {
 	Init()
 	Useradd(user User) error
@@ -37,73 +44,13 @@ type MiniothHandler interface {
 
 	Select(id string) []interface{}
 
-	Authenticate(username, password string) ([]Group, error)
+	Authenticate(username, password string) (*User, error)
 
 	Close()
 }
 
-type User struct {
-	Name     string   `json:"username" form:"username"`
-	Info     string   `json:"info" form:"info"`
-	Home     string   `json:"home" form:"home"`
-	Shell    string   `json:"shell" form:"shell"`
-	Password Password `json:"password"`
-	Groups   []Group  `json:"groups"`
-	Uid      int      `json:"uid"`
-	Pgroup   int      `json:"pgroup"`
-}
-
-func (u *User) PtrFields() []any {
-	return []any{&u.Name, &u.Info, &u.Home, &u.Shell, &u.Uid, &u.Pgroup}
-}
-
-type Password struct {
-	Hashpass           string `json:"hashpass"`
-	LastPasswordChange string `json:"lastPasswordChange"`
-	MinPasswordAge     string `json:"minimumPasswordAge"`
-	MaxPasswordAge     string `json:"maximumPasswordAge"`
-	WarningPeriod      string `json:"warningPeriod"`
-	InactivityPeriod   string `json:"inactivityPeriod"`
-	ExpirationDate     string `json:"expirationDate"`
-}
-
-func (p *Password) PtrFields() []any {
-	return []any{&p.Hashpass, &p.LastPasswordChange, &p.MinPasswordAge, &p.MaxPasswordAge, &p.WarningPeriod, &p.InactivityPeriod, &p.ExpirationDate}
-}
-
-type Group struct {
-	Name  string `json:"groupname" form:"groupname"`
-	Users []User `json:"users" form:"users"`
-	Gid   int    `json:"gid" form:"gid"`
-}
-
-func (g *Group) PtrFields() []any {
-	return []any{&g.Name, &g.Gid}
-}
-
-/* use bcrypt blowfish algo (and std lib) to hash a byte array */
-func hash(password []byte) ([]byte, error) {
-	return bcrypt.GenerateFromPassword(password, HASH_COST)
-}
-
-func hash_cost(password []byte, cost int) ([]byte, error) {
-	return bcrypt.GenerateFromPassword(password, cost)
-}
-
-/* check if a passowrd is correct */
-func verifyPass(hashedPass, password []byte) bool {
-	if err := bcrypt.CompareHashAndPassword(hashedPass, password); err == nil {
-		return true
-	}
-	return false
-}
-
-type Minioth struct {
-	handler MiniothHandler
-	root    User /* perhaps we dont need to hold a ref to this, but each Minioth should have a root user. Its handled on init*/
-}
-
-/* Use this function to create an instance of minioth. */
+/* "constructor"
+* Use this function to create an instance of minioth. */
 func NewMinioth(rootname string, useDb bool, dbPath string) Minioth {
 	log.Print("Creating new minioth...")
 
@@ -133,6 +80,9 @@ func NewMinioth(rootname string, useDb bool, dbPath string) Minioth {
 	return newM
 }
 
+/* attach handler methods to minioth.
+*  just to avoid redundant dot calls
+* */
 func (m *Minioth) Useradd(user User) error {
 	return m.handler.Useradd(user)
 }
@@ -173,26 +123,12 @@ func (m *Minioth) Select(id string) []interface{} {
 	return m.handler.Select(id)
 }
 
-func (m *Minioth) Authenticate(username, password string) ([]Group, error) {
+func (m *Minioth) Authenticate(username, password string) (*User, error) {
 	return m.handler.Authenticate(username, password)
 }
 
-/* check password fields for allowed values...*/
-func (p *Password) validatePassword() error {
-	// Validate Password Length
-	if len(p.Hashpass) < 4 {
-		return fmt.Errorf("password length '%d' is too short: minimum required length is 4 characters", len(p.Hashpass))
-	}
-
-	// Validate Hashpass
-	if p.Hashpass == "" {
-		return errors.New("hashpass cannot be empty")
-	}
-
-	return nil
-}
-
-/* delete the 3 state files */
+/* NOTE: irrelevant atm
+* delete the 3 state files */
 func (m *Minioth) purge() {
 	log.Print("Purging everything...")
 
@@ -238,17 +174,93 @@ func (m *Minioth) purge() {
 	}
 }
 
-/* This function should sync the DB state and the Plain state. TODO:*/
+/* NOTE: irrelevant atm
+* This function should sync the DB state and the Plain state. TODO:*/
 func (m *Minioth) sync() error {
 	return nil
+}
+
+/* main user struct */
+type User struct {
+	Name     string   `json:"username" form:"username"`
+	Info     string   `json:"info" form:"info"`
+	Home     string   `json:"home" form:"home"`
+	Shell    string   `json:"shell" form:"shell"`
+	Password Password `json:"password"`
+	Groups   []Group  `json:"groups"`
+	Uid      int      `json:"uid"`
+	Pgroup   int      `json:"pgroup"`
+}
+
+func (u *User) PtrFields() []any {
+	return []any{&u.Name, &u.Info, &u.Home, &u.Shell, &u.Uid, &u.Pgroup}
 }
 
 func (u *User) toString() string {
 	return fmt.Sprintf("%v, %v, %v, %v, %v, %v", u.Name, u.Info, u.Home, u.Shell, u.Uid, u.Pgroup)
 }
 
+/* main password struct */
+type Password struct {
+	Hashpass           string `json:"hashpass"`
+	LastPasswordChange string `json:"lastPasswordChange"`
+	MinPasswordAge     string `json:"minimumPasswordAge"`
+	MaxPasswordAge     string `json:"maximumPasswordAge"`
+	WarningPeriod      string `json:"warningPeriod"`
+	InactivityPeriod   string `json:"inactivityPeriod"`
+	ExpirationDate     string `json:"expirationDate"`
+}
+
+func (p *Password) PtrFields() []any {
+	return []any{&p.Hashpass, &p.LastPasswordChange, &p.MinPasswordAge, &p.MaxPasswordAge, &p.WarningPeriod, &p.InactivityPeriod, &p.ExpirationDate}
+}
+
+/* check password fields for allowed values...*/
+func (p *Password) validatePassword() error {
+	// Validate Password Length
+	if len(p.Hashpass) < 4 {
+		return fmt.Errorf("password length '%d' is too short: minimum required length is 4 characters", len(p.Hashpass))
+	}
+
+	// Validate Hashpass
+	if p.Hashpass == "" {
+		return errors.New("hashpass cannot be empty")
+	}
+
+	return nil
+}
+
+/* main group struct */
+type Group struct {
+	Name  string `json:"groupname" form:"groupname"`
+	Users []User `json:"users" form:"users"`
+	Gid   int    `json:"gid" form:"gid"`
+}
+
+func (g *Group) PtrFields() []any {
+	return []any{&g.Name, &g.Gid}
+}
+
 func (g *Group) toString() string {
 	return fmt.Sprintf("%v", g.Name)
+}
+
+/* UTIL functions */
+/* use bcrypt blowfish algo (and std lib) to hash a byte array */
+func hash(password []byte) ([]byte, error) {
+	return bcrypt.GenerateFromPassword(password, HASH_COST)
+}
+
+func hash_cost(password []byte, cost int) ([]byte, error) {
+	return bcrypt.GenerateFromPassword(password, cost)
+}
+
+/* check if a passowrd is correct */
+func verifyPass(hashedPass, password []byte) bool {
+	if err := bcrypt.CompareHashAndPassword(hashedPass, password); err == nil {
+		return true
+	}
+	return false
 }
 
 func groupsToString(groups []Group) string {

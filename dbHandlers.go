@@ -1,5 +1,10 @@
 package minioth
 
+/*
+* A minioth handler, encircling a DuckDB.
+*
+* */
+
 import (
 	"database/sql"
 	"fmt"
@@ -12,6 +17,7 @@ import (
 	_ "github.com/marcboeker/go-duckdb"
 )
 
+/* utility constants and globals */
 const (
 	MINIOTH_DB string = "data/db/minioth.db"
 
@@ -45,11 +51,13 @@ const (
   `
 )
 
+/* central object */
 type DBHandler struct {
 	db     *sql.DB
 	DBName string
 }
 
+/* "singleton" like db connection reference */
 func (m *DBHandler) getConn() (*sql.DB, error) {
 	db := m.db
 	var err error
@@ -65,6 +73,7 @@ func (m *DBHandler) getConn() (*sql.DB, error) {
 	return db, err
 }
 
+/* initialization method for root user, could be reconfigured*/
 func (m *DBHandler) insertRootUser(user User, db *sql.DB) error {
 	tx, err := db.Begin()
 	if err != nil {
@@ -120,6 +129,7 @@ func (m *DBHandler) insertRootUser(user User, db *sql.DB) error {
 	return nil
 }
 
+/* INTERFACE agent methods */
 func (m *DBHandler) Init() {
 	log.Print("Initializing... Minioth DB")
 	_, err := os.Stat("data")
@@ -900,26 +910,35 @@ func (m *DBHandler) Select(id string) []interface{} {
 	}
 }
 
-func (m *DBHandler) Authenticate(username, password string) ([]Group, error) {
+func (m *DBHandler) Authenticate(username, password string) (*User, error) {
 	log.Printf("authenticating user... %q:%q", username, password)
 
 	db, err := m.getConn()
 	if err != nil {
 		return nil, err
 	}
-	user, groups := getUser(username, db)
+	user := getUser(username, db)
 	if user == nil {
 		return nil, fmt.Errorf("user not found")
 	}
 
 	if verifyPass([]byte(user.Password.Hashpass), []byte(password)) {
-		return groups, nil
+		return user, nil
 	} else {
 		return nil, fmt.Errorf("failed to authenticate, bad credentials.")
 	}
 }
 
-func getUser(username string, db *sql.DB) (*User, []Group) {
+/* close the prev "singleton" db connection */
+func (m *DBHandler) Close() {
+	if m.db != nil {
+		m.db.Close()
+	}
+}
+
+/* somewhat UTILITY functions and methods */
+/* select all user information given a username */
+func getUser(username string, db *sql.DB) *User {
 	// lets check if the user exists before joining the big guns
 	var exists bool
 	err := db.QueryRow("SELECT EXISTS(SELECT 1 FROM users WHERE username = ?)", username).Scan(&exists)
@@ -928,7 +947,7 @@ func getUser(username string, db *sql.DB) (*User, []Group) {
 	}
 
 	if !exists {
-		return nil, nil
+		return nil
 	}
 
 	userQuery := `
@@ -950,7 +969,7 @@ func getUser(username string, db *sql.DB) (*User, []Group) {
 	rows, err := db.Query(userQuery, username)
 	if err != nil {
 		log.Printf("error on query: %v", err)
-		return nil, nil
+		return nil
 	}
 	defer rows.Close()
 
@@ -965,7 +984,7 @@ func getUser(username string, db *sql.DB) (*User, []Group) {
 	for rows.Next() {
 		if err := rows.Scan(&user.Name, &user.Info, &user.Home, &user.Shell, &user.Uid, &user.Pgroup, &gid, &gname); err != nil {
 			log.Printf("failed to ugr scan row: %v", err)
-			return nil, nil
+			return nil
 		}
 
 		if gid.Valid && gname.Valid {
@@ -975,6 +994,8 @@ func getUser(username string, db *sql.DB) (*User, []Group) {
 			})
 		}
 	}
+
+	user.Groups = groups
 
 	passwordQuery := `
     SELECT 
@@ -987,19 +1008,19 @@ func getUser(username string, db *sql.DB) (*User, []Group) {
 	password := Password{}
 	row := db.QueryRow(passwordQuery, user.Uid)
 	if row == nil {
-		return nil, nil
+		return nil
 	}
 
 	err = row.Scan(&password.Hashpass, &password.LastPasswordChange, &password.MinPasswordAge,
 		&password.MaxPasswordAge, &password.WarningPeriod, &password.InactivityPeriod, &password.ExpirationDate)
 	if err != nil {
 		log.Printf("failed to scan password: %v", err)
-		return nil, nil
+		return nil
 	}
 
 	user.Password = password
 	log.Printf("User found: %+v", user)
-	return &user, groups
+	return &user
 }
 
 func (m *DBHandler) nextId(table string) (int, error) {
@@ -1038,8 +1059,4 @@ func checkIfRoot(uid string) error {
 		return fmt.Errorf("indeed root: %v", nil)
 	}
 	return nil
-}
-
-func (m *DBHandler) Close() {
-	m.db.Close()
 }
