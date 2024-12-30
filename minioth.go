@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"log"
 	"os"
-	"strings"
 
 	"golang.org/x/crypto/bcrypt"
 )
@@ -30,12 +29,12 @@ type Minioth struct {
 * */
 type MiniothHandler interface {
 	Init()
-	Useradd(user User) error
+	Useradd(user User) (uid int, err error) /* should return the uid as well*/
 	Userdel(uid string) error
 	Usermod(user User) error
 	Userpatch(uid string, fields map[string]interface{}) error
 
-	Groupadd(group Group) error
+	Groupadd(group Group) (gid int, err error) /* should return the gid inserted as well*/
 	Groupdel(gid string) error
 	Groupmod(group Group) error
 	Grouppatch(gid string, fields map[string]interface{}) error
@@ -83,7 +82,7 @@ func NewMinioth(rootname string, useDb bool, dbPath string) Minioth {
 /* attach handler methods to minioth.
 *  just to avoid redundant dot calls
 * */
-func (m *Minioth) Useradd(user User) error {
+func (m *Minioth) Useradd(user User) (int, error) {
 	return m.handler.Useradd(user)
 }
 
@@ -99,7 +98,7 @@ func (m *Minioth) Userpatch(uid string, fields map[string]interface{}) error {
 	return m.handler.Userpatch(uid, fields)
 }
 
-func (m *Minioth) Groupadd(group Group) error {
+func (m *Minioth) Groupadd(group Group) (int, error) {
 	return m.handler.Groupadd(group)
 }
 
@@ -261,14 +260,4 @@ func verifyPass(hashedPass, password []byte) bool {
 		return true
 	}
 	return false
-}
-
-func groupsToString(groups []Group) string {
-	var res []string
-
-	for _, group := range groups {
-		res = append(res, group.toString())
-	}
-
-	return strings.Join(res, ",")
 }

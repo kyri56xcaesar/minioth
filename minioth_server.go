@@ -135,7 +135,7 @@ func (srv *MService) ServeHTTP() {
 			// Check for uniquness [ NOTE: Now its done internally ]
 
 			// Proceed with Registration
-			err = minioth.Useradd(uclaim.User)
+			uid, err := minioth.Useradd(uclaim.User)
 			if err != nil {
 				log.Print("failed to add user")
 				if strings.Contains(strings.ToLower(err.Error()), "alr") {
@@ -151,7 +151,7 @@ func (srv *MService) ServeHTTP() {
 			// TODO: should insta "pseudo" login issue a token for registration.
 			// can I redirect to login?
 			c.JSON(200, gin.H{
-				"message":   "Registration successful!. Log in.",
+				"message":   fmt.Sprintf("User %v Registration successful!. Log in.", uid),
 				"login_url": "/v1/login",
 			})
 		})
@@ -189,6 +189,7 @@ func (srv *MService) ServeHTTP() {
 			}
 
 			strGroups := groupsToString(user.Groups)
+			strGids := gidsToString(user.Groups)
 
 			// TODO: should upgrde the way I create users.. need to be able to create admins as well...
 			// or perhaps make the root admin be able to "promote" a user
@@ -202,10 +203,14 @@ func (srv *MService) ServeHTTP() {
 				log.Fatalf("failed to generate refresh token: %v", err)
 			}
 
+			// for now return detailed information so that frontend is accomodated
+			// and followup authorization is provided (ids needed)
 			// NOTE: use Authorization header for now.
 			c.JSON(200, gin.H{
 				"username":      lclaim.Username,
+				"user_id":       user.Uid,
 				"groups":        strGroups,
+				"group_ids":     strGids,
 				"access_token":  token,
 				"refresh_token": refreshToken,
 			})
@@ -325,7 +330,8 @@ func (srv *MService) ServeHTTP() {
 
 			response := make(map[string]string)
 			response["valid"] = strconv.FormatBool(token.Valid)
-			response["user"] = claims.UserID
+			response["user_id"] = claims.UserID
+			response["username"] = claims.Username
 			response["groups"] = claims.Groups
 			response["issued_at"] = claims.IssuedAt.String()
 			response["expires_at"] = claims.ExpiresAt.String()
@@ -486,7 +492,7 @@ func (srv *MService) ServeHTTP() {
 				return
 			}
 
-			err = minioth.Useradd(uclaim.User)
+			uid, err := minioth.Useradd(uclaim.User)
 			if err != nil {
 				log.Print("failed to add user")
 				if strings.Contains(strings.ToLower(err.Error()), "duplicate") {
@@ -502,7 +508,7 @@ func (srv *MService) ServeHTTP() {
 			// TODO: should insta "pseudo" login issue a token for registration.
 			// can I redirect to login?
 			c.JSON(200, gin.H{
-				"message":   "User added.",
+				"message":   fmt.Sprintf("User %v added.", uid),
 				"login_url": "sure",
 			})
 		})
@@ -606,7 +612,7 @@ func (srv *MService) ServeHTTP() {
 				return
 			}
 
-			if err := minioth.Groupadd(group); err != nil {
+			if _, err := minioth.Groupadd(group); err != nil {
 				log.Printf("Failed to add group: %v", err)
 				c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to add group"})
 				return
@@ -855,4 +861,22 @@ func GenerateRefreshJWT(userID string) (string, error) {
 
 	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
 	return token.SignedString(jwtRefreshKey)
+}
+
+func groupsToString(groups []Group) string {
+	var res []string
+
+	for _, group := range groups {
+		res = append(res, group.toString())
+	}
+
+	return strings.Join(res, ",")
+}
+
+func gidsToString(groups []Group) string {
+	var res []string
+	for _, group := range groups {
+		res = append(res, strconv.Itoa(group.Gid))
+	}
+	return strings.Join(res, ",")
 }

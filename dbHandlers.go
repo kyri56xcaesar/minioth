@@ -219,17 +219,25 @@ func (m *DBHandler) Init() {
 	}
 }
 
-func (m *DBHandler) Useradd(user User) error {
+/* Useradd method
+* will insert a given user in the relational db
+*
+* relations:
+* passwords, user_groups, groups
+*
+* Each user should be associated with his own group
+* */
+func (m *DBHandler) Useradd(user User) (int, error) {
 	log.Printf("Inserting user %q", user.Name)
 	db, err := m.getConn()
 	if err != nil {
-		return err
+		return -1, err
 	}
 
 	tx, err := db.Begin()
 	if err != nil {
 		log.Printf("failed to begin transaction: %v", err)
-		return err
+		return -1, err
 	}
 
 	// check if user exists...
@@ -239,10 +247,10 @@ func (m *DBHandler) Useradd(user User) error {
 		log.Printf("User with name %q does not exist.", user.Name)
 	} else if err != nil {
 		log.Printf("Error checking for user existence: %v", err)
-		return fmt.Errorf("error checking for user existence: %w", err)
+		return -1, fmt.Errorf("error checking for user existence: %w", err)
 	} else {
 		log.Printf("User with name %q already exists.", user.Name)
-		return fmt.Errorf("user already exists")
+		return -1, fmt.Errorf("user already exists")
 	}
 
 	userQuery := `
@@ -255,7 +263,7 @@ func (m *DBHandler) Useradd(user User) error {
 	user.Uid, err = m.nextId("users")
 	if err != nil {
 		log.Printf("failed to retrieve the next avaible uid: %v", err)
-		return err
+		return -1, err
 	}
 	user.Pgroup = user.Uid
 
@@ -265,7 +273,7 @@ func (m *DBHandler) Useradd(user User) error {
 	if err != nil {
 		log.Printf("failed to execute query: %v", err)
 		tx.Rollback()
-		return err
+		return -1, err
 	}
 
 	passwordQuery := `
@@ -273,24 +281,31 @@ func (m *DBHandler) Useradd(user User) error {
     passwords (uid, hashpass, lastpasswordchange, minimumpasswordage, maximumpasswordage, warningperiod, inactivityperiod, expirationdate)
   VALUES (?, ?, ?, ?, ?, ?, ?, ?)
   `
+	/* add the user inique group */
+	gid, err := m.Groupadd(Group{user.Name, nil, user.Uid})
+	if err != nil {
+		log.Printf("failed to insert user unique/primary group: %v", err)
+		return -1, err
+	}
 
 	usergroupQuery := `
     INSERT INTO
       user_groups (uid, gid)
     VALUES
+      (?, ?),
       (?, ?)`
-	_, err = tx.Exec(usergroupQuery, user.Uid, 1000)
+	_, err = tx.Exec(usergroupQuery, user.Uid, 1000, user.Uid, gid)
 	if err != nil {
 		tx.Rollback()
 		log.Printf("failed to group user: %v", err)
-		return err
+		return -1, err
 	}
 
 	hashPass, err := hash([]byte(user.Password.Hashpass))
 	if err != nil {
 		log.Printf("failed to hash the pass: %v", err)
 		tx.Rollback()
-		return err
+		return -1, err
 	}
 
 	_, err = tx.Exec(passwordQuery, user.Uid, hashPass, user.Password.LastPasswordChange, user.Password.MinPasswordAge,
@@ -298,15 +313,15 @@ func (m *DBHandler) Useradd(user User) error {
 	if err != nil {
 		tx.Rollback()
 		log.Printf("failed to execute query: %v", err)
-		return err
+		return -1, err
 	}
 
 	if err := tx.Commit(); err != nil {
 		log.Printf("failed to commit transaction: %v", err)
-		return err
+		return -1, err
 	}
 
-	return nil
+	return user.Uid, nil
 }
 
 func (m *DBHandler) Userdel(uid string) error {
@@ -325,6 +340,51 @@ func (m *DBHandler) Userdel(uid string) error {
 	deleteUserQuery := `DELETE FROM users WHERE uid = ?`
 	deletePasswordQuery := `DELETE FROM passwords WHERE uid = ?`
 	deleteUserGroupQuery := `DELETE FROM user_groups WHERE uid = ?`
+
+	var gid int
+	err = db.QueryRow(`
+    SELECT 
+      gid 
+    FROM 
+      groups 
+    WHERE groupname = (
+      SELECT 
+        username
+      FROM 
+        users 
+      WHERE 
+        uid = ?
+    )`, uid).Scan(&gid)
+	if err != nil {
+		log.Printf("failed to retrieve primary group gid of the user")
+		return err
+	}
+
+	deletePrimaryGroupQuery := `
+    DELETE FROM 
+      groups 
+    WHERE 
+      gid = ?
+    `
+
+	cleanRemenantsQuery := `
+    DELETE FROM 
+      user_groups 
+    WHERE 
+      gid = ?
+  `
+
+	_, err = db.Exec(deletePrimaryGroupQuery, gid)
+	if err != nil {
+		log.Printf("error, failed to delete user primary group: %v", err)
+		return err
+	}
+
+	_, err = db.Exec(cleanRemenantsQuery, gid)
+	if err != nil {
+		log.Printf("error, failed to clean the user_group to the deleted group relation: %v", err)
+		return err
+	}
 
 	_, err = db.Exec(deleteUserGroupQuery, uid)
 	if err != nil {
@@ -572,13 +632,13 @@ func (m *DBHandler) Userpatch(uid string, fields map[string]interface{}) error {
 	return nil
 }
 
-func (m *DBHandler) Groupadd(group Group) error {
+func (m *DBHandler) Groupadd(group Group) (int, error) {
 	log.Printf("Adding new group: %v", group)
 
 	db, err := m.getConn()
 	if err != nil {
 		log.Printf("failed to get the db conn: %v", err)
-		return err
+		return -1, err
 	}
 
 	// check if group exists...
@@ -588,10 +648,10 @@ func (m *DBHandler) Groupadd(group Group) error {
 		log.Printf("group with name %q does not exist.", group.Name)
 	} else if err != nil {
 		log.Printf("errror checking for group existence: %v", err)
-		return fmt.Errorf("error checking for group existence: %w", err)
+		return -1, fmt.Errorf("error checking for group existence: %w", err)
 	} else {
 		log.Printf("group with name %q already exists.", group.Name)
-		return fmt.Errorf("group already exists")
+		return -1, fmt.Errorf("group already exists")
 	}
 
 	groupAddQuery := `
@@ -606,13 +666,13 @@ func (m *DBHandler) Groupadd(group Group) error {
 	gid, err := m.nextId("groups")
 	if err != nil {
 		log.Printf("failed to retrieve the nextid")
-		return err
+		return -1, err
 	}
 
 	_, err = db.Exec(groupAddQuery, gid, group.Name)
 	if err != nil {
 		log.Printf("error executing groupAddQuery: %v", err)
-		return err
+		return -1, err
 	}
 
 	// "update" or insert group user relation
@@ -629,11 +689,11 @@ func (m *DBHandler) Groupadd(group Group) error {
 		_, err = db.Exec(userGroupQuery, args...)
 		if err != nil {
 			log.Printf("Error executing userGroupQuery: %v", err)
-			return err
+			return -1, err
 		}
 	}
 
-	return nil
+	return gid, nil
 }
 
 func (m *DBHandler) Groupdel(gid string) error {

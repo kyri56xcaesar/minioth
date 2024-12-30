@@ -67,28 +67,28 @@ func (m *PlainHandler) Init() {
 	}
 }
 
-func (m *PlainHandler) Useradd(user User) error {
+func (m *PlainHandler) Useradd(user User) (int, error) {
 	log.Printf("Adding user %q ...", user.Name)
 
 	// Open/Create files first to handle all file errors at once.
 	file, err := os.OpenFile(MINIOTH_PASSWD, os.O_CREATE|os.O_RDWR|os.O_APPEND, 0o600)
 	if err != nil {
 		log.Printf("error opening file: %v", err)
-		return err
+		return -1, err
 	}
 	defer file.Close()
 
 	pfile, err := os.OpenFile(MINIOTH_SHADOW, os.O_CREATE|os.O_RDWR|os.O_APPEND, 0o600)
 	if err != nil {
 		log.Printf("error opening file: %v", err)
-		return err
+		return -1, err
 	}
 	defer pfile.Close()
 
 	gfile, err := os.OpenFile(MINIOTH_GROUP, os.O_CREATE|os.O_RDWR|os.O_APPEND, 0o600)
 	if err != nil {
 		log.Printf("error opening file: %v", err)
-		return err
+		return -1, err
 	}
 	defer gfile.Close()
 
@@ -96,14 +96,14 @@ func (m *PlainHandler) Useradd(user User) error {
 	err = exists(&user)
 	if err != nil {
 		log.Printf("error: user already exists: %v", err)
-		return err
+		return -1, err
 	}
 
 	// Generate password early, return early if failed...
 	hashPass, err := hash([]byte(user.Password.Hashpass))
 	if err != nil {
 		log.Printf("Failed to hash the pass... :%v", err)
-		return err
+		return -1, err
 	}
 
 	// passwd file
@@ -116,8 +116,13 @@ func (m *PlainHandler) Useradd(user User) error {
 	// shadow file
 	fmt.Fprintf(pfile, ENTRY_MSHADOW_FORMAT, user.Name, hashPass, user.Password.LastPasswordChange, user.Password.MinPasswordAge, user.Password.MaxPasswordAge, user.Password.WarningPeriod, user.Password.InactivityPeriod, user.Password.ExpirationDate, len(user.Password.Hashpass))
 
+	iuud, err := strconv.Atoi(uuid)
+	if err != nil {
+		log.Printf("failed to atoi uid: %v", err)
+		return -1, err
+	}
 	log.Print("Useradd successful.")
-	return nil
+	return iuud, nil
 }
 
 /* simply delete a user.. */
@@ -182,8 +187,8 @@ func (m *PlainHandler) Userpatch(uid string, fields map[string]interface{}) erro
 	return nil
 }
 
-func (m *PlainHandler) Groupadd(group Group) error {
-	return nil
+func (m *PlainHandler) Groupadd(group Group) (int, error) {
+	return -1, nil
 }
 
 func (m *PlainHandler) Groupdel(groupname string) error {
