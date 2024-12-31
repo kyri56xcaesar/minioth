@@ -75,6 +75,7 @@ type CustomClaims struct {
 	UserID   string `json:"user_id"`
 	Username string `json:"username"`
 	Groups   string `json:"groups"`
+	GroupIDS string `json:"group_ids"`
 	jwt.RegisteredClaims
 }
 
@@ -193,7 +194,7 @@ func (srv *MService) ServeHTTP() {
 
 			// TODO: should upgrde the way I create users.. need to be able to create admins as well...
 			// or perhaps make the root admin be able to "promote" a user
-			token, err := GenerateAccessJWT(strconv.Itoa(user.Uid), lclaim.Username, strGroups)
+			token, err := GenerateAccessJWT(strconv.Itoa(user.Uid), lclaim.Username, strGroups, strGids)
 			if err != nil {
 				log.Fatalf("failed generating jwt token: %v", err)
 			}
@@ -250,8 +251,7 @@ func (srv *MService) ServeHTTP() {
 				})
 				return
 			}
-
-			newAccessToken, err := GenerateAccessJWT(claims.UserID, claims.Username, claims.Groups)
+			newAccessToken, err := GenerateAccessJWT(claims.UserID, claims.Username, claims.Groups, claims.GroupIDS)
 			if err != nil {
 				log.Printf("error generating new access token: %v", err)
 				c.JSON(http.StatusInternalServerError, gin.H{
@@ -823,12 +823,13 @@ func offLimits(str string) bool {
 }
 
 // jwt
-func GenerateAccessJWT(userID, username, groups string) (string, error) {
+func GenerateAccessJWT(userID, username, groups, gids string) (string, error) {
 	// Set the claims for the token
 	claims := CustomClaims{
 		UserID:   userID,
 		Username: username,
 		Groups:   groups,
+		GroupIDS: gids,
 		RegisteredClaims: jwt.RegisteredClaims{
 			Issuer:    "minioth",
 			ExpiresAt: jwt.NewNumericDate(time.Now().Add(time.Hour * time.Duration(JWT_VALIDITY_HOURS))),
