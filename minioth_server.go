@@ -382,8 +382,10 @@ func (srv *MService) ServeHTTP() {
 
 			response := make(map[string]string)
 			response["valid"] = strconv.FormatBool(token.Valid)
-			response["user"] = claims.UserID
+			response["uid"] = claims.UserID
+			response["username"] = claims.Username
 			response["groups"] = claims.Groups
+			response["gids"] = claims.GroupIDS
 			response["issued_at"] = claims.IssuedAt.String()
 			response["expires_at"] = claims.ExpiresAt.String()
 
