@@ -341,7 +341,10 @@ func (m *DBHandler) Userdel(uid string) error {
 	deletePasswordQuery := `DELETE FROM passwords WHERE uid = ?`
 	deleteUserGroupQuery := `DELETE FROM user_groups WHERE uid = ?`
 
-	var gid int
+	var (
+		gid            int
+		pgroup_deleted bool
+	)
 	err = db.QueryRow(`
     SELECT 
       gid 
@@ -357,33 +360,33 @@ func (m *DBHandler) Userdel(uid string) error {
     )`, uid).Scan(&gid)
 	if err != nil {
 		log.Printf("failed to retrieve primary group gid of the user")
-		return err
+		pgroup_deleted = true
 	}
 
-	deletePrimaryGroupQuery := `
-    DELETE FROM 
-      groups 
-    WHERE 
-      gid = ?
+	if !pgroup_deleted {
+		deletePrimaryGroupQuery := `
+      DELETE FROM 
+        groups 
+      WHERE 
+        gid = ?
+      `
+		cleanRemenantsQuery := `
+      DELETE FROM 
+        user_groups 
+      WHERE 
+        gid = ?
     `
+		_, err = db.Exec(deletePrimaryGroupQuery, gid)
+		if err != nil {
+			log.Printf("error, failed to delete user primary group: %v", err)
+			return err
+		}
 
-	cleanRemenantsQuery := `
-    DELETE FROM 
-      user_groups 
-    WHERE 
-      gid = ?
-  `
-
-	_, err = db.Exec(deletePrimaryGroupQuery, gid)
-	if err != nil {
-		log.Printf("error, failed to delete user primary group: %v", err)
-		return err
-	}
-
-	_, err = db.Exec(cleanRemenantsQuery, gid)
-	if err != nil {
-		log.Printf("error, failed to clean the user_group to the deleted group relation: %v", err)
-		return err
+		_, err = db.Exec(cleanRemenantsQuery, gid)
+		if err != nil {
+			log.Printf("error, failed to clean the user_group to the deleted group relation: %v", err)
+			return err
+		}
 	}
 
 	_, err = db.Exec(deleteUserGroupQuery, uid)

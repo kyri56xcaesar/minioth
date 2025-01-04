@@ -51,6 +51,9 @@ var (
 * -> reference to a server engine
 * -> configuration
 * -> reference to minioth
+*
+*
+* the model structs used by the server are defined in minioth.go
 * */
 type MService struct {
 	Engine  *gin.Engine
@@ -128,13 +131,12 @@ func (srv *MService) ServeHTTP() {
 			err = uclaim.validateUser()
 			if err != nil {
 				log.Printf("failed to validate: %v", err)
-				c.JSON(400, gin.H{
+				c.JSON(40, gin.H{
 					"error": err.Error(),
 				})
 				return
 			}
 			// Check for uniquness [ NOTE: Now its done internally ]
-
 			// Proceed with Registration
 			uid, err := minioth.Useradd(uclaim.User)
 			if err != nil {
@@ -148,7 +150,6 @@ func (srv *MService) ServeHTTP() {
 				}
 				return
 			}
-
 			// TODO: should insta "pseudo" login issue a token for registration.
 			// can I redirect to login?
 			c.JSON(200, gin.H{
@@ -333,6 +334,7 @@ func (srv *MService) ServeHTTP() {
 			response["user_id"] = claims.UserID
 			response["username"] = claims.Username
 			response["groups"] = claims.Groups
+			response["gids"] = claims.GroupIDS
 			response["issued_at"] = claims.IssuedAt.String()
 			response["expires_at"] = claims.ExpiresAt.String()
 
@@ -357,31 +359,10 @@ func (srv *MService) ServeHTTP() {
 
 			tokenString := reqBody.Token
 
-			// Parse and validate the token
-			token, err := jwt.ParseWithClaims(tokenString, &CustomClaims{}, func(token *jwt.Token) (interface{}, error) {
-				if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
-					return nil, fmt.Errorf("unexpected signing method: %v", token.Header["alg"])
-				}
-				return jwtSecretKey, nil
-			})
-
-			if err != nil || !token.Valid {
-				token, err = jwt.ParseWithClaims(tokenString, &CustomClaims{}, func(token *jwt.Token) (interface{}, error) {
-					if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
-						return nil, fmt.Errorf("unexpected signing method: %v", token.Header["alg"])
-					}
-					return jwtRefreshKey, nil
-				})
-			}
-
-			claims, ok := token.Claims.(*CustomClaims)
-			if !ok {
-				log.Printf("not okay when retrieving claims")
-				return
-			}
+			valid, claims, err := DecodeJWT(tokenString)
 
 			response := make(map[string]string)
-			response["valid"] = strconv.FormatBool(token.Valid)
+			response["valid"] = strconv.FormatBool(valid)
 			response["uid"] = claims.UserID
 			response["username"] = claims.Username
 			response["groups"] = claims.Groups
@@ -497,7 +478,7 @@ func (srv *MService) ServeHTTP() {
 			uid, err := minioth.Useradd(uclaim.User)
 			if err != nil {
 				log.Print("failed to add user")
-				if strings.Contains(strings.ToLower(err.Error()), "duplicate") {
+				if strings.Contains(strings.ToLower(err.Error()), "alr") {
 					c.JSON(403, gin.H{"error": "already exists!"})
 				} else {
 					c.JSON(400, gin.H{
@@ -850,6 +831,38 @@ func GenerateAccessJWT(userID, username, groups, gids string) (string, error) {
 	}
 
 	return tokenString, nil
+}
+
+func DecodeJWT(tokenString string) (bool, *CustomClaims, error) {
+	// Parse and validate the token
+	token, err := jwt.ParseWithClaims(tokenString, &CustomClaims{}, func(token *jwt.Token) (interface{}, error) {
+		if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
+			return nil, fmt.Errorf("unexpected signing method: %v", token.Header["alg"])
+		}
+		return jwtSecretKey, nil
+	})
+
+	if err != nil || !token.Valid {
+		token, err = jwt.ParseWithClaims(tokenString, &CustomClaims{}, func(token *jwt.Token) (interface{}, error) {
+			if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
+				return nil, fmt.Errorf("unexpected signing method: %v", token.Header["alg"])
+			}
+			return jwtRefreshKey, nil
+		})
+	}
+
+	if err != nil {
+		log.Printf("%v token, exiting", token)
+		return false, nil, err
+	}
+
+	claims, ok := token.Claims.(*CustomClaims)
+	if !ok {
+		log.Printf("not okay when retrieving claims")
+		return false, nil, errors.New("invalid claims")
+	}
+
+	return true, claims, nil
 }
 
 func GenerateRefreshJWT(userID string) (string, error) {
