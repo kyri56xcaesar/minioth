@@ -814,7 +814,7 @@ func (m *DBHandler) Grouppatch(gid string, fields map[string]interface{}) error 
 }
 
 func (m *DBHandler) Passwd(username, password string) error {
-	log.Printf("Chaning password for %q", username)
+	log.Printf("Changing password for %q", username)
 	db, err := m.getConn()
 	if err != nil {
 		log.Printf("failed to connect to database: %v", err)
