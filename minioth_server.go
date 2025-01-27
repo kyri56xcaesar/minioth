@@ -334,7 +334,7 @@ func (srv *MService) ServeHTTP() {
 			response["user_id"] = claims.UserID
 			response["username"] = claims.Username
 			response["groups"] = claims.Groups
-			response["gids"] = claims.GroupIDS
+			response["group_ids"] = claims.GroupIDS
 			response["issued_at"] = claims.IssuedAt.String()
 			response["expires_at"] = claims.ExpiresAt.String()
 
@@ -363,10 +363,10 @@ func (srv *MService) ServeHTTP() {
 
 			response := make(map[string]string)
 			response["valid"] = strconv.FormatBool(valid)
-			response["uid"] = claims.UserID
+			response["user_id"] = claims.UserID
 			response["username"] = claims.Username
 			response["groups"] = claims.Groups
-			response["gids"] = claims.GroupIDS
+			response["group_ids"] = claims.GroupIDS
 			response["issued_at"] = claims.IssuedAt.String()
 			response["expires_at"] = claims.ExpiresAt.String()
 
@@ -478,7 +478,7 @@ func (srv *MService) ServeHTTP() {
 			uid, err := minioth.Useradd(uclaim.User)
 			if err != nil {
 				log.Print("failed to add user")
-				if strings.Contains(strings.ToLower(err.Error()), "alr") {
+				if strings.Contains(strings.ToLower(err.Error()), "") {
 					c.JSON(403, gin.H{"error": "already exists!"})
 				} else {
 					c.JSON(400, gin.H{
