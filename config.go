@@ -21,6 +21,7 @@ type EnvConfig struct {
 	DBfile         string
 	JWTSecretKey   []byte
 	JWTRefreshKey  []byte
+	ServiceSecret  []byte
 	AllowedOrigins []string
 	AllowedHeaders []string
 	AllowedMethods []string
@@ -56,6 +57,7 @@ func LoadConfig(path string) *EnvConfig {
 		AllowedMethods: getEnvs("ALLOWED_METHODS", nil),
 		JWTSecretKey:   getJWTSecretKey("JWT_SECRET_KEY"),
 		JWTRefreshKey:  getJWTSecretKey("JWT_REFRESH_KEY"),
+		ServiceSecret:  getJWTSecretKey("SERVICE_SECRET"),
 		HashCost:       hashcost,
 	}
 

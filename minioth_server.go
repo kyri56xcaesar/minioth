@@ -414,7 +414,7 @@ func (srv *MService) ServeHTTP() {
 
 	/* admin endpoints */
 	admin := srv.Engine.Group("/admin")
-	admin.Use(AuthMiddleware("admin"))
+	admin.Use(AuthMiddleware("admin", srv))
 	{
 		admin.POST("/hasher", func(c *gin.Context) {
 			var b struct {
@@ -691,8 +691,19 @@ func (srv *MService) ServeHTTP() {
 }
 
 /* For this service, authorization is required only for admin role. */
-func AuthMiddleware(role string) gin.HandlerFunc {
+func AuthMiddleware(role string, srv *MService) gin.HandlerFunc {
 	return func(c *gin.Context) {
+		// if service secret exists and validated, grant access
+		if s_secret_claim := c.GetHeader("X-Service-Secret"); s_secret_claim != "" {
+			if s_secret_claim == string(srv.Config.ServiceSecret) {
+				log.Printf("service secret accepted. access granted.")
+				c.Next()
+				return
+			} else {
+				log.Printf("service secret invalid. access not granted")
+			}
+		}
+
 		authHeader := c.GetHeader("Authorization")
 		if authHeader == "" {
 			c.JSON(http.StatusUnauthorized, gin.H{"error": "Authorization header is required"})
