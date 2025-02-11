@@ -701,6 +701,8 @@ func AuthMiddleware(role string, srv *MService) gin.HandlerFunc {
 				return
 			} else {
 				log.Printf("service secret invalid. access not granted")
+				c.Abort()
+				return
 			}
 		}
 
