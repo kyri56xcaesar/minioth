@@ -29,7 +29,7 @@ type Minioth struct {
 * */
 type MiniothHandler interface {
 	Init()
-	Useradd(user User) (uid int, err error) /* should return the uid as well*/
+	Useradd(user User) (uid, pgroup int, err error) /* should return the uid as well*/
 	Userdel(uid string) error
 	Usermod(user User) error
 	Userpatch(uid string, fields map[string]interface{}) error
@@ -82,7 +82,7 @@ func NewMinioth(rootname string, useDb bool, dbPath string) Minioth {
 /* attach handler methods to minioth.
 *  just to avoid redundant dot calls
 * */
-func (m *Minioth) Useradd(user User) (int, error) {
+func (m *Minioth) Useradd(user User) (int, int, error) {
 	return m.handler.Useradd(user)
 }
 

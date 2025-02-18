@@ -67,28 +67,28 @@ func (m *PlainHandler) Init() {
 	}
 }
 
-func (m *PlainHandler) Useradd(user User) (int, error) {
+func (m *PlainHandler) Useradd(user User) (int, int, error) {
 	log.Printf("Adding user %q ...", user.Name)
 
 	// Open/Create files first to handle all file errors at once.
 	file, err := os.OpenFile(MINIOTH_PASSWD, os.O_CREATE|os.O_RDWR|os.O_APPEND, 0o600)
 	if err != nil {
 		log.Printf("error opening file: %v", err)
-		return -1, err
+		return -1, -1, err
 	}
 	defer file.Close()
 
 	pfile, err := os.OpenFile(MINIOTH_SHADOW, os.O_CREATE|os.O_RDWR|os.O_APPEND, 0o600)
 	if err != nil {
 		log.Printf("error opening file: %v", err)
-		return -1, err
+		return -1, -1, err
 	}
 	defer pfile.Close()
 
 	gfile, err := os.OpenFile(MINIOTH_GROUP, os.O_CREATE|os.O_RDWR|os.O_APPEND, 0o600)
 	if err != nil {
 		log.Printf("error opening file: %v", err)
-		return -1, err
+		return -1, -1, err
 	}
 	defer gfile.Close()
 
@@ -96,14 +96,14 @@ func (m *PlainHandler) Useradd(user User) (int, error) {
 	err = exists(&user)
 	if err != nil {
 		log.Printf("error: user already exists: %v", err)
-		return -1, err
+		return -1, -1, err
 	}
 
 	// Generate password early, return early if failed...
 	hashPass, err := hash([]byte(user.Password.Hashpass))
 	if err != nil {
 		log.Printf("Failed to hash the pass... :%v", err)
-		return -1, err
+		return -1, -1, err
 	}
 
 	// passwd file
@@ -119,10 +119,10 @@ func (m *PlainHandler) Useradd(user User) (int, error) {
 	iuud, err := strconv.Atoi(uuid)
 	if err != nil {
 		log.Printf("failed to atoi uid: %v", err)
-		return -1, err
+		return -1, -1, err
 	}
 	log.Print("Useradd successful.")
-	return iuud, nil
+	return iuud, -1, nil
 }
 
 /* simply delete a user.. */

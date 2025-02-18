@@ -227,17 +227,17 @@ func (m *DBHandler) Init() {
 *
 * Each user should be associated with his own group
 * */
-func (m *DBHandler) Useradd(user User) (int, error) {
+func (m *DBHandler) Useradd(user User) (int, int, error) {
 	log.Printf("Inserting user %q", user.Name)
 	db, err := m.getConn()
 	if err != nil {
-		return -1, err
+		return -1, -1, err
 	}
 
 	tx, err := db.Begin()
 	if err != nil {
 		log.Printf("failed to begin transaction: %v", err)
-		return -1, err
+		return -1, -1, err
 	}
 
 	// check if user exists...
@@ -247,10 +247,10 @@ func (m *DBHandler) Useradd(user User) (int, error) {
 		log.Printf("User with name %q does not exist.", user.Name)
 	} else if err != nil {
 		log.Printf("Error checking for user existence: %v", err)
-		return -1, fmt.Errorf("error checking for user existence: %w", err)
+		return -1, -1, fmt.Errorf("error checking for user existence: %w", err)
 	} else {
 		log.Printf("User with name %q already exists.", user.Name)
-		return -1, fmt.Errorf("user already exists")
+		return -1, -1, fmt.Errorf("user already exists")
 	}
 
 	userQuery := `
@@ -263,7 +263,7 @@ func (m *DBHandler) Useradd(user User) (int, error) {
 	user.Uid, err = m.nextId("users")
 	if err != nil {
 		log.Printf("failed to retrieve the next avaible uid: %v", err)
-		return -1, err
+		return -1, -1, err
 	}
 	user.Pgroup = user.Uid
 
@@ -273,7 +273,7 @@ func (m *DBHandler) Useradd(user User) (int, error) {
 	if err != nil {
 		log.Printf("failed to execute query: %v", err)
 		tx.Rollback()
-		return -1, err
+		return -1, -1, err
 	}
 
 	passwordQuery := `
@@ -285,7 +285,7 @@ func (m *DBHandler) Useradd(user User) (int, error) {
 	gid, err := m.Groupadd(Group{user.Name, nil, user.Uid})
 	if err != nil {
 		log.Printf("failed to insert user unique/primary group: %v", err)
-		return -1, err
+		return -1, -1, err
 	}
 
 	usergroupQuery := `
@@ -298,14 +298,14 @@ func (m *DBHandler) Useradd(user User) (int, error) {
 	if err != nil {
 		tx.Rollback()
 		log.Printf("failed to group user: %v", err)
-		return -1, err
+		return -1, -1, err
 	}
 
 	hashPass, err := hash([]byte(user.Password.Hashpass))
 	if err != nil {
 		log.Printf("failed to hash the pass: %v", err)
 		tx.Rollback()
-		return -1, err
+		return -1, -1, err
 	}
 
 	_, err = tx.Exec(passwordQuery, user.Uid, hashPass, user.Password.LastPasswordChange, user.Password.MinPasswordAge,
@@ -313,15 +313,15 @@ func (m *DBHandler) Useradd(user User) (int, error) {
 	if err != nil {
 		tx.Rollback()
 		log.Printf("failed to execute query: %v", err)
-		return -1, err
+		return -1, -1, err
 	}
 
 	if err := tx.Commit(); err != nil {
 		log.Printf("failed to commit transaction: %v", err)
-		return -1, err
+		return -1, -1, err
 	}
 
-	return user.Uid, nil
+	return user.Uid, gid, nil
 }
 
 func (m *DBHandler) Userdel(uid string) error {
