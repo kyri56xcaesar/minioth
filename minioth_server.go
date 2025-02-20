@@ -138,7 +138,7 @@ func (srv *MService) ServeHTTP() {
 			}
 			// Check for uniquness [ NOTE: Now its done internally ]
 			// Proceed with Registration
-			uid, err := minioth.Useradd(uclaim.User)
+			uid, pgroup, err := minioth.Useradd(uclaim.User)
 			if err != nil {
 				log.Print("failed to add user")
 				if strings.Contains(strings.ToLower(err.Error()), "alr") {
@@ -153,7 +153,9 @@ func (srv *MService) ServeHTTP() {
 			// TODO: should insta "pseudo" login issue a token for registration.
 			// can I redirect to login?
 			c.JSON(200, gin.H{
-				"message":   fmt.Sprintf("User %v Registration successful!. Log in.", uid),
+				"message":   fmt.Sprintf("User %v PGroup %v Registration successful!. Log in.", uid, pgroup),
+				"uid":       uid,
+				"pgroup":    pgroup,
 				"login_url": "/v1/login",
 			})
 		})
@@ -193,6 +195,12 @@ func (srv *MService) ServeHTTP() {
 			strGroups := groupsToString(user.Groups)
 			strGids := gidsToString(user.Groups)
 
+			var pgroup int
+			for _, group := range user.Groups {
+				if group.Name == user.Name {
+					pgroup = group.Gid
+				}
+			}
 			// TODO: should upgrde the way I create users.. need to be able to create admins as well...
 			// or perhaps make the root admin be able to "promote" a user
 			token, err := GenerateAccessJWT(strconv.Itoa(user.Uid), lclaim.Username, strGroups, strGids)
@@ -213,6 +221,7 @@ func (srv *MService) ServeHTTP() {
 				"user_id":       user.Uid,
 				"groups":        strGroups,
 				"group_ids":     strGids,
+				"pgroup":        pgroup,
 				"access_token":  token,
 				"refresh_token": refreshToken,
 			})
@@ -475,7 +484,7 @@ func (srv *MService) ServeHTTP() {
 				return
 			}
 
-			uid, err := minioth.Useradd(uclaim.User)
+			uid, pgroup, err := minioth.Useradd(uclaim.User)
 			if err != nil {
 				log.Print("failed to add user")
 				if strings.Contains(strings.ToLower(err.Error()), "") {
@@ -492,6 +501,8 @@ func (srv *MService) ServeHTTP() {
 			// can I redirect to login?
 			c.JSON(200, gin.H{
 				"message":   fmt.Sprintf("User %v added.", uid),
+				"uid":       uid,
+				"pgroup":    pgroup,
 				"login_url": "sure",
 			})
 		})
