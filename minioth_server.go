@@ -131,7 +131,7 @@ func (srv *MService) ServeHTTP() {
 			err = uclaim.validateUser()
 			if err != nil {
 				log.Printf("failed to validate: %v", err)
-				c.JSON(400, gin.H{
+				c.JSON(40, gin.H{
 					"error": err.Error(),
 				})
 				return
