@@ -878,7 +878,7 @@ func (m *DBHandler) Select(id string) []interface{} {
       SELECT  
         u.uid, u.username, p.hashpass, p.lastPasswordChange, p.minimumPasswordAge,
         p.maximumPasswordAge, p.warningPeriod, p.inactivityPeriod, p.expirationDate,
-        u.info, u.home, u.shell, u.pgroup, GROUP_CONCAT(g.groupname) as groups
+        u.info, u.home, u.shell, u.pgroup, GROUP_CONCAT(g.groupname), GROUP_CONCAT(g.gid) as groups
       FROM 
         users u
       LEFT JOIN passwords p ON p.uid = u.uid
@@ -897,18 +897,25 @@ func (m *DBHandler) Select(id string) []interface{} {
 		for rows.Next() {
 			var user User
 			var groupNames sql.NullString // Use sql.NullString to handle NULL values
-			err := rows.Scan(&user.Uid, &user.Name, &user.Password.Hashpass, &user.Password.LastPasswordChange, &user.Password.MinPasswordAge, &user.Password.MaxPasswordAge, &user.Password.WarningPeriod, &user.Password.InactivityPeriod, &user.Password.ExpirationDate, &user.Info, &user.Home, &user.Shell, &user.Pgroup, &groupNames)
+			var groupIds sql.NullString
+			err := rows.Scan(&user.Uid, &user.Name, &user.Password.Hashpass, &user.Password.LastPasswordChange, &user.Password.MinPasswordAge, &user.Password.MaxPasswordAge, &user.Password.WarningPeriod, &user.Password.InactivityPeriod, &user.Password.ExpirationDate, &user.Info, &user.Home, &user.Shell, &user.Pgroup, &groupNames, &groupIds)
 			if err != nil {
 				log.Printf("failed to scan user: %v", err)
 				return nil
 			}
 
 			groups := []Group{}
-			if groupNames.Valid && groupNames.String != "" { // Check if groupNames is valid and not empty
+			if groupNames.Valid && groupNames.String != "" && groupIds.Valid && groupIds.String != "" { // Check if groupNames is valid and not empty
 				groupNameList := strings.Split(groupNames.String, ",")
-				for _, groupName := range groupNameList {
+				groupIdsList := strings.Split(groupIds.String, ",")
+				for i, groupName := range groupNameList {
+					gid, err := strconv.Atoi(groupIdsList[i])
+					if err != nil {
+						log.Printf("failed to atoi gid from: %v", groupIdsList[i])
+					}
 					groups = append(groups, Group{
 						Name: groupName,
+						Gid:  gid,
 					})
 				}
 			}
@@ -924,7 +931,7 @@ func (m *DBHandler) Select(id string) []interface{} {
 
 		groupQuery := `
       SELECT 
-        g.gid, g.groupname, GROUP_CONCAT(u.username) as users
+        g.gid, g.groupname, GROUP_CONCAT(u.username), GROUP_CONCAT(u.uid) as users
       FROM 
         groups g
       LEFT JOIN user_groups ug ON g.gid = ug.gid
@@ -942,7 +949,8 @@ func (m *DBHandler) Select(id string) []interface{} {
 		for rows.Next() {
 			var group Group
 			var userNames sql.NullString
-			err := rows.Scan(&group.Gid, &group.Name, &userNames)
+			var userIds sql.NullString
+			err := rows.Scan(&group.Gid, &group.Name, &userNames, &userIds)
 			if err != nil {
 				log.Printf("failed to scan group: %v", err)
 				return nil
@@ -953,9 +961,16 @@ func (m *DBHandler) Select(id string) []interface{} {
 			users := []User{}
 			if userNames.Valid && userNames.String != "" {
 				userNameList := strings.Split(userNames.String, ",")
-				for _, userName := range userNameList {
+				userIdsList := strings.Split(userIds.String, ",")
+				for i, userName := range userNameList {
+					uid, err := strconv.Atoi(userIdsList[i])
+					if err != nil {
+						log.Printf("failed to atoi a uid: %v", userIdsList[i])
+						return nil
+					}
 					users = append(users, User{
 						Name: userName,
+						Uid:  uid,
 					})
 				}
 			}
