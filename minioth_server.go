@@ -369,6 +369,12 @@ func (srv *MService) ServeHTTP() {
 			tokenString := reqBody.Token
 
 			valid, claims, err := DecodeJWT(tokenString)
+			if err != nil {
+				log.Printf("error decoding token: %v", err)
+				c.JSON(http.StatusBadRequest, gin.H{
+					"error": "bad token",
+				})
+			}
 
 			response := make(map[string]string)
 			response["valid"] = strconv.FormatBool(valid)
@@ -457,7 +463,7 @@ func (srv *MService) ServeHTTP() {
 		})
 
 		admin.GET("/users", func(c *gin.Context) {
-			users := minioth.Select("users")
+			users := minioth.Select("users?uid=" + c.Request.URL.Query().Get("uid"))
 
 			c.JSON(http.StatusOK, gin.H{
 				"content": users,

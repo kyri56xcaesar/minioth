@@ -863,7 +863,17 @@ func (m *DBHandler) Passwd(username, password string) error {
 }
 
 func (m *DBHandler) Select(id string) []interface{} {
-	log.Printf("Selecting all %q", id)
+	var param, value string
+	parts := strings.Split(id, "?")
+	if len(parts) > 1 {
+		id = parts[0]
+		parts_2 := strings.Split(parts[1], "=")
+		if len(parts_2) > 1 {
+			param = parts_2[0]
+			value = parts_2[1]
+		}
+	}
+	// log.Printf("Selecting %q", id)
 	db, err := m.getConn()
 	if err != nil {
 		log.Printf("failed to connect to database: %v", err)
@@ -872,22 +882,50 @@ func (m *DBHandler) Select(id string) []interface{} {
 
 	switch id {
 	case "users":
-		var result []interface{}
+		var (
+			result    []interface{}
+			userQuery string
+			rows      *sql.Rows
+			err       error
+		)
 
-		userQuery := `
-      SELECT  
-        u.uid, u.username, p.hashpass, p.lastPasswordChange, p.minimumPasswordAge,
-        p.maximumPasswordAge, p.warningPeriod, p.inactivityPeriod, p.expirationDate,
-        u.info, u.home, u.shell, u.pgroup, GROUP_CONCAT(g.groupname), GROUP_CONCAT(g.gid) as groups
-      FROM 
-        users u
-      LEFT JOIN passwords p ON p.uid = u.uid
-      LEFT JOIN user_groups ug ON ug.uid = u.uid
-      LEFT JOIN groups g ON g.gid = ug.gid
-      GROUP BY 
-        u.uid, u.username, u.info, u.home, u.shell, u.pgroup, p.hashpass, p.lastPasswordChange, p.minimumPasswordAge, p.maximumPasswordAge, p.warningPeriod, p.inactivityPeriod, p.expirationDate;
-    `
-		rows, err := db.Query(userQuery)
+		if param != "" && value != "" {
+			userQuery = fmt.Sprintf(`
+			SELECT  
+			  u.uid, u.username, p.hashpass, p.lastPasswordChange, p.minimumPasswordAge,
+			  p.maximumPasswordAge, p.warningPeriod, p.inactivityPeriod, p.expirationDate,
+			  u.info, u.home, u.shell, u.pgroup, GROUP_CONCAT(g.groupname), GROUP_CONCAT(g.gid) as groups
+			FROM 
+			  users u
+			LEFT JOIN passwords p ON p.uid = u.uid
+			LEFT JOIN user_groups ug ON ug.uid = u.uid
+			LEFT JOIN groups g ON g.gid = ug.gid
+			WHERE 
+			  u.%s = ?
+			GROUP BY 
+			  u.uid, u.username, u.info, u.home, u.shell, u.pgroup, p.hashpass, p.lastPasswordChange, p.minimumPasswordAge, p.maximumPasswordAge, p.warningPeriod, p.inactivityPeriod, p.expirationDate;
+	  		`, param)
+
+			rows, err = db.Query(userQuery, value)
+
+		} else {
+			userQuery = `
+			SELECT  
+			  u.uid, u.username, p.hashpass, p.lastPasswordChange, p.minimumPasswordAge,
+			  p.maximumPasswordAge, p.warningPeriod, p.inactivityPeriod, p.expirationDate,
+			  u.info, u.home, u.shell, u.pgroup, GROUP_CONCAT(g.groupname), GROUP_CONCAT(g.gid) as groups
+			FROM 
+			  users u
+			LEFT JOIN passwords p ON p.uid = u.uid
+			LEFT JOIN user_groups ug ON ug.uid = u.uid
+			LEFT JOIN groups g ON g.gid = ug.gid
+			GROUP BY 
+			  u.uid, u.username, u.info, u.home, u.shell, u.pgroup, p.hashpass, p.lastPasswordChange, p.minimumPasswordAge, p.maximumPasswordAge, p.warningPeriod, p.inactivityPeriod, p.expirationDate;
+	  		`
+			rows, err = db.Query(userQuery)
+
+		}
+
 		if err != nil {
 			log.Printf("failed to query users: %v", err)
 			return nil
@@ -1003,7 +1041,7 @@ func (m *DBHandler) Authenticate(username, password string) (*User, error) {
 	if verifyPass([]byte(user.Password.Hashpass), []byte(password)) {
 		return user, nil
 	} else {
-		return nil, fmt.Errorf("failed to authenticate, bad credentials.")
+		return nil, fmt.Errorf("failed to authenticate bad credentials: %v", nil)
 	}
 }
 

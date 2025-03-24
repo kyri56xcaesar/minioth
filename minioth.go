@@ -128,7 +128,7 @@ func (m *Minioth) Authenticate(username, password string) (*User, error) {
 
 /* NOTE: irrelevant atm
 * delete the 3 state files */
-func (m *Minioth) purge() {
+func (m *Minioth) Purge() {
 	log.Print("Purging everything...")
 
 	_, err := os.Stat("data/plain")
@@ -175,7 +175,7 @@ func (m *Minioth) purge() {
 
 /* NOTE: irrelevant atm
 * This function should sync the DB state and the Plain state. TODO:*/
-func (m *Minioth) sync() error {
+func (m *Minioth) Sync() error {
 	return nil
 }
 
@@ -195,7 +195,7 @@ func (u *User) PtrFields() []any {
 	return []any{&u.Name, &u.Info, &u.Home, &u.Shell, &u.Uid, &u.Pgroup}
 }
 
-func (u *User) toString() string {
+func (u *User) ToString() string {
 	return fmt.Sprintf("%v, %v, %v, %v, %v, %v", u.Name, u.Info, u.Home, u.Shell, u.Uid, u.Pgroup)
 }
 

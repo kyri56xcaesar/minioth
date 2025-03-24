@@ -314,7 +314,7 @@ func checkIfUserExists(u User) error {
 		// compare username
 		if u.Name == username {
 			log.Printf("user %s already exists.", username)
-			return fmt.Errorf("user already exists.")
+			return fmt.Errorf("user already exists: %v", err)
 		}
 	}
 
