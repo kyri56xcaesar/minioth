@@ -431,6 +431,41 @@ func (srv *MService) ServeHTTP() {
 	admin := srv.Engine.Group("/admin")
 	admin.Use(AuthMiddleware("admin", srv))
 	{
+		// just a login with no token issueing
+		admin.POST("/verify-password", func(c *gin.Context) {
+			var lclaim LoginClaim
+			err := c.BindJSON(&lclaim)
+			if err != nil {
+				log.Printf("error binding request body to struct: %v", err)
+				c.JSON(http.StatusBadRequest, gin.H{"error": "binding error"})
+				return
+			}
+
+			// Verify user credentials
+			err = lclaim.validateClaim()
+			if err != nil {
+				log.Printf("failed to validate: %v", err)
+				c.JSON(400, gin.H{
+					"error": err.Error(),
+				})
+				return
+			}
+
+			_, err = minioth.Authenticate(lclaim.Username, lclaim.Password)
+			if err != nil {
+				log.Printf("error: %v", err)
+				if strings.Contains(err.Error(), "not found") {
+					c.JSON(404, gin.H{"error": "user not found"})
+				} else {
+					c.JSON(400, gin.H{
+						"error": "invalid",
+					})
+				}
+				return
+			}
+			c.JSON(http.StatusOK, gin.H{"status": "valid"})
+
+		})
 		admin.POST("/hasher", func(c *gin.Context) {
 			var b struct {
 				HashAlg  string `json:"hashalg"`
