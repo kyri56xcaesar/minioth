@@ -106,7 +106,7 @@ func NewMSerivce(m *Minioth, conf string) MService {
 }
 
 /* Should implement the following endpoints:
- * /login,  /register, /user/me, /token/refresh,
+ * /login,  /register, /user/token, /token/refresh,
  * /groups, /groups/{groupID}/assign/{userID}
  * /token/refresh
  * /healthz, /audit/logs, /admin/users, /admin/users
@@ -285,7 +285,7 @@ func (srv *MService) ServeHTTP() {
 			})
 		})
 
-		apiV1.GET("/user/me", func(c *gin.Context) {
+		apiV1.GET("/user/token", func(c *gin.Context) {
 			authHeader := c.GetHeader("Authorization")
 			if authHeader == "" {
 				c.JSON(http.StatusUnauthorized, gin.H{"error": "Authorization header is required"})
@@ -352,42 +352,67 @@ func (srv *MService) ServeHTTP() {
 			})
 		})
 
-		apiV1.POST("/user/me", func(c *gin.Context) {
-			var reqBody struct {
-				Token string `json:"token" binding:"required"`
-			}
-
-			err := c.BindJSON(&reqBody)
-			if err != nil {
-				log.Printf("provide a access_token to examine...")
-				c.JSON(http.StatusBadRequest, gin.H{
-					"error": "provide an access_token...",
-				})
+		apiV1.GET("/user/me", func(c *gin.Context) {
+			authHeader := c.GetHeader("Authorization")
+			if authHeader == "" {
+				c.JSON(http.StatusUnauthorized, gin.H{"error": "Authorization header is required"})
+				c.Abort()
 				return
 			}
 
-			tokenString := reqBody.Token
+			if !strings.Contains(authHeader, "Bearer ") {
+				c.JSON(http.StatusBadRequest, gin.H{"error": "must contain Bearer token"})
+				c.Abort()
+				return
+			}
+			// Extract the token from the Authorization header
+			tokenString := authHeader[len("Bearer "):]
+			if tokenString == "" {
+				c.JSON(http.StatusUnauthorized, gin.H{"error": "Bearer token is required"})
+				c.Abort()
+				return
+			}
 
-			valid, claims, err := DecodeJWT(tokenString)
-			if err != nil {
-				log.Printf("error decoding token: %v", err)
-				c.JSON(http.StatusBadRequest, gin.H{
-					"error": "bad token",
+			// Parse and validate the token
+			token, err := jwt.ParseWithClaims(tokenString, &CustomClaims{}, func(token *jwt.Token) (interface{}, error) {
+				if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
+					return nil, fmt.Errorf("unexpected signing method: %v", token.Header["alg"])
+				}
+				return jwtSecretKey, nil
+			})
+
+			if err != nil || !token.Valid {
+				token, err = jwt.ParseWithClaims(tokenString, &CustomClaims{}, func(token *jwt.Token) (interface{}, error) {
+					if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
+						return nil, fmt.Errorf("unexpected signing method: %v", token.Header["alg"])
+					}
+					return jwtRefreshKey, nil
 				})
 			}
 
-			response := make(map[string]string)
-			response["valid"] = strconv.FormatBool(valid)
-			response["user_id"] = claims.UserID
-			response["username"] = claims.Username
-			response["groups"] = claims.Groups
-			response["group_ids"] = claims.GroupIDS
-			response["issued_at"] = claims.IssuedAt.String()
-			response["expires_at"] = claims.ExpiresAt.String()
+			if err != nil {
+				log.Printf("%v token, exiting", token)
+				c.JSON(http.StatusBadRequest, gin.H{
+					"error": "bad token",
+				})
+				c.Abort()
+				return
+			}
 
-			c.JSON(http.StatusOK, gin.H{
-				"info": response,
-			})
+			claims, ok := token.Claims.(*CustomClaims)
+			if !ok {
+				log.Printf("not okay when retrieving claims")
+				return
+			}
+
+			user := minioth.Select("users?uid=" + claims.UserID)
+
+			if len(user) != 1 {
+				c.JSON(http.StatusNotFound, gin.H{"status": "not found"})
+				return
+			} else {
+				c.JSON(http.StatusOK, user[0])
+			}
 		})
 
 		/* This endpoint should change a user password. It must "authenticate" the user. User can only change his password. */
