@@ -131,7 +131,7 @@ func (srv *MService) ServeHTTP() {
 			err = uclaim.validateUser()
 			if err != nil {
 				log.Printf("failed to validate: %v", err)
-				c.JSON(40, gin.H{
+				c.JSON(400, gin.H{
 					"error": err.Error(),
 				})
 				return
@@ -355,12 +355,14 @@ func (srv *MService) ServeHTTP() {
 		apiV1.GET("/user/me", func(c *gin.Context) {
 			authHeader := c.GetHeader("Authorization")
 			if authHeader == "" {
+				log.Printf("no auth header")
 				c.JSON(http.StatusUnauthorized, gin.H{"error": "Authorization header is required"})
 				c.Abort()
 				return
 			}
 
 			if !strings.Contains(authHeader, "Bearer ") {
+				log.Printf("no bearer")
 				c.JSON(http.StatusBadRequest, gin.H{"error": "must contain Bearer token"})
 				c.Abort()
 				return
@@ -368,6 +370,7 @@ func (srv *MService) ServeHTTP() {
 			// Extract the token from the Authorization header
 			tokenString := authHeader[len("Bearer "):]
 			if tokenString == "" {
+				log.Printf("no bearer token found")
 				c.JSON(http.StatusUnauthorized, gin.H{"error": "Bearer token is required"})
 				c.Abort()
 				return
@@ -655,7 +658,16 @@ func (srv *MService) ServeHTTP() {
 				return
 			}
 
-			err := minioth.Usermod(ruser.User)
+			log.Printf("user %+v", ruser)
+
+			err := ruser.validateUser()
+			if err != nil {
+				log.Printf("invalid user, cannot update: %v", err)
+				c.JSON(http.StatusBadRequest, gin.H{"error": "bad input format"})
+				return
+			}
+
+			err = minioth.Usermod(ruser.User)
 			if err != nil {
 				c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to update user"})
 				return
