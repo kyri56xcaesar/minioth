@@ -12,13 +12,13 @@ import (
 )
 
 type EnvConfig struct {
-	ConfigPath     string
-	CertFile       string
-	KeyFile        string
-	HTTPPort       string
-	HTTPSPort      string
-	IP             string
-	DBfile         string
+	ConfigPath string
+
+	API_PORT string
+	ISSUER   string
+	IP       string
+
+	DB_PATH        string
 	JWTSecretKey   []byte
 	JWTRefreshKey  []byte
 	ServiceSecret  []byte
@@ -46,12 +46,10 @@ func LoadConfig(path string) *EnvConfig {
 
 	config := &EnvConfig{
 		ConfigPath:     split[len(split)-1],
-		CertFile:       getEnv("CERTFILE", "f4k3"),
-		KeyFile:        getEnv("KEYFILE", "f4k3"),
-		HTTPPort:       getEnv("HTTP_PORT", "9090"),
-		HTTPSPort:      getEnv("HTTPS_PORT", "443"),
+		API_PORT:       getEnv("API_PORT", "9090"),
+		ISSUER:         getEnv("ISSUER", "http://localhost:9090"),
 		IP:             getEnv("IP", "localhost"),
-		DBfile:         getEnv("DB_NAME", "data/database.db"),
+		DB_PATH:        getEnv("DP_PATH", "data/database.db"),
 		AllowedOrigins: getEnvs("ALLOWED_ORIGINS", []string{"None"}),
 		AllowedHeaders: getEnvs("ALLOWED_HEADERS", nil),
 		AllowedMethods: getEnvs("ALLOWED_METHODS", nil),
@@ -125,9 +123,5 @@ func (cfg *EnvConfig) ToString() string {
 }
 
 func (cfg *EnvConfig) Addr() string {
-	return cfg.IP + ":" + cfg.HTTPPort
-}
-
-func (cfg *EnvConfig) TLSAddr() string {
-	return cfg.IP + ":" + cfg.HTTPSPort
+	return cfg.IP + ":" + cfg.API_PORT
 }

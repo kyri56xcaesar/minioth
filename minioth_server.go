@@ -4,10 +4,13 @@ package minioth
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
+	"os"
 	"os/signal"
 	"strconv"
 	"strings"
@@ -22,11 +25,12 @@ import (
 *
 * Constants */
 const (
-	DEFAULT_conf_name      string = "minioth.env"
-	DEFAULT_conf_path      string = "configs/"
-	DEFAULT_audit_log_path string = "data/minioth.log"
-	VERSION                       = ""
-	JWT_VALIDITY_HOURS     int    = 1
+	DEFAULT_conf_name      = "minioth.env"
+	DEFAULT_conf_path      = "configs/"
+	DEFAULT_audit_log_path = "data/minioth.log"
+	VERSION                = "v1"
+	jwksFilePath           = "jwks.json"
+	JWT_VALIDITY_HOURS     = 1
 )
 
 /*
@@ -109,10 +113,56 @@ func NewMSerivce(m *Minioth, conf string) MService {
  * /login,  /register, /user/token, /token/refresh,
  * /groups, /groups/{groupID}/assign/{userID}
  * /token/refresh
- * /healthz, /audit/logs, /admin/users, /admin/users
+ * /audit/logs, /admin/users, /admin/users
  */
 func (srv *MService) ServeHTTP() {
 	minioth := srv.Minioth
+
+	wellknown := srv.Engine.Group("/.well-known")
+	{
+		wellknown.GET("/minioth", func(c *gin.Context) {
+			c.JSON(http.StatusOK, gin.H{
+				"version": "0.0.1",
+				"status":  "alive",
+			})
+		})
+		wellknown.GET("/openid-configuration", func(c *gin.Context) {
+			c.JSON(http.StatusOK, gin.H{
+				"issuer":   srv.Config.ISSUER,
+				"jwks_uri": fmt.Sprintf("%s/.well-known/jwks.json", srv.Config.ISSUER),
+				// "authorization_endpoint":                fmt.Sprintf("%s/%s/login", srv.Config.ISSUER, VERSION),
+				"token_endpoint":                        fmt.Sprintf("%s/%s/login", srv.Config.ISSUER, VERSION),
+				"userinfo_endpoint":                     fmt.Sprintf("%s/%s/user/me", srv.Config.ISSUER, VERSION),
+				"id_token_signing_alg_values_supported": "HS256",
+			})
+		})
+
+		wellknown.GET("/jwks.json", func(c *gin.Context) {
+			jwksFile, err := os.Open(jwksFilePath)
+			if err != nil {
+				log.Printf("failed to open jwks.json file: %v", err)
+				c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to load JWKS"})
+				return
+			}
+			defer jwksFile.Close()
+
+			jwksData, err := io.ReadAll(jwksFile)
+			if err != nil {
+				log.Printf("failed to read jwks.json file: %v", err)
+				c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to read JWKS"})
+				return
+			}
+
+			var jwks map[string]any
+			if err := json.Unmarshal(jwksData, &jwks); err != nil {
+				log.Printf("failed to parse jwks.json file: %v", err)
+				c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to parse JWKS"})
+				return
+			}
+
+			c.JSON(http.StatusOK, jwks)
+		})
+	}
 
 	apiV1 := srv.Engine.Group(VERSION)
 	{
