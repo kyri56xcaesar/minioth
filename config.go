@@ -18,7 +18,7 @@ type EnvConfig struct {
 	ISSUER   string
 	IP       string
 
-	DB_PATH        string
+	DB             string
 	JWKS           string
 	JWTSecretKey   []byte
 	JWTRefreshKey  []byte
@@ -50,7 +50,7 @@ func LoadConfig(path string) *EnvConfig {
 		API_PORT:       getEnv("API_PORT", "9090"),
 		ISSUER:         getEnv("ISSUER", "http://localhost:9090"),
 		IP:             getEnv("IP", "localhost"),
-		DB_PATH:        getEnv("DP_PATH", "data/database.db"),
+		DB:             getEnv("DP_PATH", "data/database.db"),
 		AllowedOrigins: getEnvs("ALLOWED_ORIGINS", []string{"None"}),
 		AllowedHeaders: getEnvs("ALLOWED_HEADERS", nil),
 		AllowedMethods: getEnvs("ALLOWED_METHODS", nil),
