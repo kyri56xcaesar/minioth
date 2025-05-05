@@ -19,8 +19,6 @@ import (
 
 /* utility constants and globals */
 const (
-	MINIOTH_DB string = "data/db/minioth.db"
-
 	initSql string = `
   CREATE TABLE IF NOT EXISTS users (
 		uid INTEGER,
@@ -54,7 +52,7 @@ const (
 /* central object */
 type DBHandler struct {
 	db     *sql.DB
-	DBName string
+	DBpath string
 }
 
 /* "singleton" like db connection reference */
@@ -63,7 +61,7 @@ func (m *DBHandler) getConn() (*sql.DB, error) {
 	var err error
 
 	if db == nil {
-		db, err = sql.Open("duckdb", "data/db/"+m.DBName)
+		db, err = sql.Open("duckdb", m.DBpath)
 		m.db = db
 		if err != nil {
 			log.Printf("Failed to connect to DuckDB: %v", err)
@@ -140,12 +138,19 @@ func (m *DBHandler) Init() {
 		}
 	}
 
-	_, err = os.Stat("data/db")
+	cpath, err := os.Getwd()
 	if err != nil {
-		err = os.Mkdir("data/db", 0o700)
-		if err != nil {
-			panic("failed to make new directory.")
-		}
+		panic(err)
+	}
+	parts := strings.Split(m.DBpath, "/")
+	if strings.HasSuffix(m.DBpath, "/") || len(parts) == 0 {
+		panic("invalid db path value")
+	}
+	db_path := strings.Join(parts[:len(parts)-1], "/")
+	err = os.MkdirAll(cpath+"/"+db_path, 0o644)
+	if err != nil {
+		panic(err)
+
 	}
 
 	db, err := m.getConn()

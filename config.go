@@ -50,7 +50,7 @@ func LoadConfig(path string) *EnvConfig {
 		API_PORT:       getEnv("API_PORT", "9090"),
 		ISSUER:         getEnv("ISSUER", "http://localhost:9090"),
 		IP:             getEnv("IP", "localhost"),
-		DB:             getEnv("DP_PATH", "data/database.db"),
+		DB:             getEnv("DB", "data/database.db"),
 		AllowedOrigins: getEnvs("ALLOWED_ORIGINS", []string{"None"}),
 		AllowedHeaders: getEnvs("ALLOWED_HEADERS", nil),
 		AllowedMethods: getEnvs("ALLOWED_METHODS", nil),

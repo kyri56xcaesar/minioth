@@ -56,7 +56,7 @@ func NewMinioth(rootname string, useDb bool, dbPath string) Minioth {
 	var handler MiniothHandler
 
 	if useDb {
-		handler = &DBHandler{DBName: dbPath}
+		handler = &DBHandler{DBpath: dbPath}
 	} else {
 		handler = &PlainHandler{}
 	}
@@ -147,11 +147,6 @@ func (m *Minioth) Purge() {
 		if err != nil {
 			log.Print(err)
 		}
-		err = os.Remove(MINIOTH_DB)
-		if err != nil {
-			log.Print(err)
-		}
-
 		err = os.Remove("data/plain")
 		if err != nil {
 			log.Print(err)
