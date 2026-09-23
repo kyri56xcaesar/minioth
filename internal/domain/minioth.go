@@ -1,10 +1,14 @@
-package minioth
+package domain
 
 import (
 	"errors"
 	"fmt"
 	"log"
 	"os"
+	"path/filepath"
+	"regexp"
+	"strconv"
+	"strings"
 
 	"golang.org/x/crypto/bcrypt"
 )
@@ -15,6 +19,23 @@ import (
 
 /* hash cost for bcrypt hash function, reconfigurable from config*/
 var HASH_COST int = 16
+
+/* password policy, reconfigurable from config (see EnvConfig / NewMService) */
+var (
+	PasswordMinLength      = 8
+	PasswordMaxLength      = 72 // bcrypt silently ignores input past 72 bytes
+	PasswordRequireUpper   = false
+	PasswordRequireLower   = false
+	PasswordRequireDigit   = false
+	PasswordRequireSpecial = false
+)
+
+var (
+	upperRe   = regexp.MustCompile(`[A-Z]`)
+	lowerRe   = regexp.MustCompile(`[a-z]`)
+	digitRe   = regexp.MustCompile(`[0-9]`)
+	specialRe = regexp.MustCompile(`[^a-zA-Z0-9]`)
+)
 
 /*
 *
@@ -28,7 +49,7 @@ type Minioth struct {
 *  implements this interface.
 * */
 type MiniothHandler interface {
-	Init()
+	Init(root User)
 	Useradd(user User) (uid, pgroup int, err error) /* should return the uid as well*/
 	Userdel(uid string) error
 	Usermod(user User) error
@@ -41,6 +62,18 @@ type MiniothHandler interface {
 
 	Passwd(username, password string) error
 
+	// VerifyEmail marks uid's email as verified. Reached only via a signed,
+	// purpose-scoped token (see internal/auth's email verification token
+	// functions) — not gated behind admin auth like Userpatch, since the
+	// token itself is the credential.
+	VerifyEmail(uid string) error
+
+	// AssignGroup adds uid to gid's membership, without touching any other
+	// group field — Grouppatch only ever updates a group's own columns
+	// (name), it has no notion of membership, so promoting a user (e.g. to
+	// the admin group, gid 0) needs its own operation.
+	AssignGroup(uid string, gid int) error
+
 	Select(id string) []interface{}
 
 	Authenticate(username, password string) (*User, error)
@@ -49,32 +82,21 @@ type MiniothHandler interface {
 }
 
 /* "constructor"
-* Use this function to create an instance of minioth. */
-func NewMinioth(rootname string, useDb bool, dbPath string) Minioth {
+* Use this function to create an instance of minioth. The caller picks and
+* constructs the backend (DBHandler, PlainHandler, ...) and injects it here,
+* since domain can't import store without creating an import cycle (store
+* needs domain's User/Group/Password types). The caller also builds the
+* root user (name + plaintext password, to be hashed by the handler on
+* insert) so root's credentials are configurable rather than hardcoded. */
+func NewMinioth(root User, handler MiniothHandler) Minioth {
 	log.Print("Creating new minioth...")
 
-	var handler MiniothHandler
-
-	if useDb {
-		handler = &DBHandler{DBpath: dbPath}
-	} else {
-		handler = &PlainHandler{}
-	}
-
 	newM := Minioth{
-		root: User{
-			Name: rootname,
-			Password: Password{
-				Hashpass:       rootname,
-				ExpirationDate: "",
-			},
-			Pgroup: 0,
-			Uid:    0,
-		},
+		root:    root,
 		handler: handler,
 	}
 
-	newM.handler.Init()
+	newM.handler.Init(root)
 
 	return newM
 }
@@ -118,6 +140,14 @@ func (m *Minioth) Passwd(username, password string) error {
 	return m.handler.Passwd(username, password)
 }
 
+func (m *Minioth) VerifyEmail(uid string) error {
+	return m.handler.VerifyEmail(uid)
+}
+
+func (m *Minioth) AssignGroup(uid string, gid int) error {
+	return m.handler.AssignGroup(uid, gid)
+}
+
 func (m *Minioth) Select(id string) []interface{} {
 	return m.handler.Select(id)
 }
@@ -126,43 +156,47 @@ func (m *Minioth) Authenticate(username, password string) (*User, error) {
 	return m.handler.Authenticate(username, password)
 }
 
+func (m *Minioth) Close() {
+	m.handler.Close()
+}
+
 /* NOTE: irrelevant atm
 * delete the 3 state files */
 func (m *Minioth) Purge() {
 	log.Print("Purging everything...")
 
-	_, err := os.Stat("data/plain")
-	if err == nil {
+	if _, err := os.Stat("data/plain"); err == nil {
 		log.Print("data/plain dir exist")
 
-		err = os.Remove(MINIOTH_PASSWD)
-		if err != nil {
-			log.Print(err)
+		// Literal plain-backend paths (not store.MINIOTH_PASSWD etc.) — domain
+		// can't import store without creating an import cycle.
+		for _, f := range []string{"data/plain/mpasswd", "data/plain/mgroup", "data/plain/mshadow"} {
+			if err := os.Remove(f); err != nil {
+				log.Print(err)
+			}
 		}
-		err = os.Remove(MINIOTH_GROUP)
-		if err != nil {
-			log.Print(err)
-		}
-		err = os.Remove(MINIOTH_SHADOW)
-		if err != nil {
-			log.Print(err)
-		}
-		err = os.Remove("data/plain")
-		if err != nil {
+		if err := os.Remove("data/plain"); err != nil {
 			log.Print(err)
 		}
 	}
 
-	_, err = os.Stat("data/db")
-	if err == nil {
+	if _, err := os.Stat("data/db"); err == nil {
 		log.Print("data/db dir exists")
-		err = os.Remove("data/*.db")
+
+		// os.Remove doesn't glob ("data/*.db" was always a literal,
+		// nonexistent filename) — this is what actually deletes the *.db
+		// files it names.
+		matches, err := filepath.Glob("data/*.db")
 		if err != nil {
 			log.Print(err)
 		}
+		for _, f := range matches {
+			if err := os.Remove(f); err != nil {
+				log.Print(err)
+			}
+		}
 
-		err = os.Remove("data/db")
-		if err != nil {
+		if err := os.Remove("data/db"); err != nil {
 			log.Print(err)
 		}
 	}
@@ -176,14 +210,16 @@ func (m *Minioth) Sync() error {
 
 /* main user struct */
 type User struct {
-	Name     string   `json:"username" form:"username"`
-	Info     string   `json:"info" form:"info"`
-	Home     string   `json:"home" form:"home"`
-	Shell    string   `json:"shell" form:"shell"`
-	Password Password `json:"password"`
-	Groups   []Group  `json:"groups"`
-	Uid      int      `json:"uid"`
-	Pgroup   int      `json:"pgroup"`
+	Name          string   `json:"username" form:"username"`
+	Info          string   `json:"info" form:"info"`
+	Home          string   `json:"home" form:"home"`
+	Shell         string   `json:"shell" form:"shell"`
+	Email         string   `json:"email" form:"email"`
+	EmailVerified bool     `json:"email_verified" form:"email_verified"`
+	Password      Password `json:"password"`
+	Groups        []Group  `json:"groups"`
+	Uid           int      `json:"uid"`
+	Pgroup        int      `json:"pgroup"`
 }
 
 func (u *User) PtrFields() []any {
@@ -209,16 +245,36 @@ func (p *Password) PtrFields() []any {
 	return []any{&p.Hashpass, &p.LastPasswordChange, &p.MinPasswordAge, &p.MaxPasswordAge, &p.WarningPeriod, &p.InactivityPeriod, &p.ExpirationDate}
 }
 
-/* check password fields for allowed values...*/
-func (p *Password) validatePassword() error {
-	// Validate Password Length
-	if len(p.Hashpass) < 4 {
-		return fmt.Errorf("password length '%d' is too short: minimum required length is 4 characters", len(p.Hashpass))
+/* check password fields for allowed values, per the configurable password policy */
+func (p *Password) ValidatePassword() error {
+	n := len(p.Hashpass)
+
+	if n == 0 {
+		return errors.New("hashpass cannot be empty")
 	}
 
-	// Validate Hashpass
-	if p.Hashpass == "" {
-		return errors.New("hashpass cannot be empty")
+	if n < PasswordMinLength {
+		return fmt.Errorf("password length '%d' is too short: minimum required length is %d characters", n, PasswordMinLength)
+	}
+
+	if n > PasswordMaxLength {
+		return fmt.Errorf("password length '%d' is too long: maximum allowed length is %d characters", n, PasswordMaxLength)
+	}
+
+	if PasswordRequireUpper && !upperRe.MatchString(p.Hashpass) {
+		return errors.New("password must contain at least one uppercase letter")
+	}
+
+	if PasswordRequireLower && !lowerRe.MatchString(p.Hashpass) {
+		return errors.New("password must contain at least one lowercase letter")
+	}
+
+	if PasswordRequireDigit && !digitRe.MatchString(p.Hashpass) {
+		return errors.New("password must contain at least one digit")
+	}
+
+	if PasswordRequireSpecial && !specialRe.MatchString(p.Hashpass) {
+		return errors.New("password must contain at least one special character")
 	}
 
 	return nil
@@ -239,18 +295,36 @@ func (g *Group) toString() string {
 	return fmt.Sprintf("%v", g.Name)
 }
 
+func GroupsToString(groups []Group) string {
+	var res []string
+
+	for _, group := range groups {
+		res = append(res, group.toString())
+	}
+
+	return strings.Join(res, ",")
+}
+
+func GidsToString(groups []Group) string {
+	var res []string
+	for _, group := range groups {
+		res = append(res, strconv.Itoa(group.Gid))
+	}
+	return strings.Join(res, ",")
+}
+
 /* UTIL functions */
 /* use bcrypt blowfish algo (and std lib) to hash a byte array */
-func hash(password []byte) ([]byte, error) {
+func Hash(password []byte) ([]byte, error) {
 	return bcrypt.GenerateFromPassword(password, HASH_COST)
 }
 
-func hash_cost(password []byte, cost int) ([]byte, error) {
+func HashWithCost(password []byte, cost int) ([]byte, error) {
 	return bcrypt.GenerateFromPassword(password, cost)
 }
 
 /* check if a passowrd is correct */
-func verifyPass(hashedPass, password []byte) bool {
+func VerifyPass(hashedPass, password []byte) bool {
 	if err := bcrypt.CompareHashAndPassword(hashedPass, password); err == nil {
 		return true
 	}

@@ -1,24 +1,32 @@
-package minioth
+package server
 
-/* Minioth server is responsible for listening */
+/* Minioth server is responsible for listening.
+*
+* This file is the composition root: it owns MService, boots config/JWT
+* signing, registers the route groups (defined in routes_auth.go,
+* routes_admin.go, routes_wellknown.go — see those for the actual
+* handlers, and auth.AuthMiddleware / auth.GenerateAccessJWT etc. for auth
+* and token logic), and handles graceful shutdown. Request-model validation
+* (RegisterClaim / LoginClaim) lives here too since it's shared by more
+* than one route group. */
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"log"
 	"net/http"
-	"os"
 	"os/signal"
-	"strconv"
 	"strings"
 	"syscall"
 	"time"
 
 	"github.com/gin-gonic/gin"
-	"github.com/golang-jwt/jwt/v5"
+
+	"github.com/kyri56xcaesar/minioth/internal/auth"
+	"github.com/kyri56xcaesar/minioth/internal/config"
+	"github.com/kyri56xcaesar/minioth/internal/domain"
+	"github.com/kyri56xcaesar/minioth/internal/util"
 )
 
 /*
@@ -29,24 +37,16 @@ const (
 	DEFAULT_conf_path      = "configs/"
 	DEFAULT_audit_log_path = "data/minioth.log"
 	VERSION                = "v1"
-	JWT_VALIDITY_HOURS     = 1
 )
 
 /*
 *
 * Variables */
-var (
-	handler       MiniothHandler
-	jwtSecretKey  = []byte("default_placeholder_key")
-	jwtRefreshKey = []byte("default_refresh_placeholder_key")
-	jwksFilePath  = "jwks.json"
-
-	forbidden_names []string = []string{
-		"root",
-		"kubernetes",
-		"k8s",
-	}
-)
+var forbidden_names []string = []string{
+	"root",
+	"kubernetes",
+	"k8s",
+}
 
 /*
 * Structs
@@ -61,13 +61,13 @@ var (
 * */
 type MService struct {
 	Engine  *gin.Engine
-	Config  *EnvConfig
-	Minioth *Minioth
+	Config  *config.EnvConfig
+	Minioth *domain.Minioth
 }
 
 /* Incoming Register and Login requests binding structs */
 type RegisterClaim struct {
-	User User `json:"user"`
+	User domain.User `json:"user"`
 }
 
 type LoginClaim struct {
@@ -75,39 +75,53 @@ type LoginClaim struct {
 	Password string `json:"password"`
 }
 
-/* JWT token signed claims.
-* what information the jwt will contain.
-* */
-type CustomClaims struct {
-	UserID   string `json:"user_id"`
-	Username string `json:"username"`
-	Groups   string `json:"groups"`
-	GroupIDS string `json:"group_ids"`
-	jwt.RegisteredClaims
+// Bootstrap loads the .env config and applies its process-wide side
+// effects (JWT signing state, domain.HASH_COST, password policy). Callers
+// must run this — and let it finish — before constructing anything that
+// might use those values (domain.NewMinioth's root-user seeding hashes a
+// password, for one), since NewMService used to do this itself but
+// required an already-constructed *domain.Minioth as an argument, which
+// meant the config couldn't be loaded until after the very thing that
+// needed it had already run with un-configured defaults.
+func Bootstrap(conf string) *config.EnvConfig {
+	cfg := config.LoadConfig(conf)
+	log.Print(cfg.ToString())
+
+	auth.InitJWTSigning(cfg)
+	domain.HASH_COST = cfg.HashCost
+	domain.PasswordMinLength = cfg.PasswordMinLength
+	domain.PasswordMaxLength = cfg.PasswordMaxLength
+	domain.PasswordRequireUpper = cfg.PasswordRequireUpper
+	domain.PasswordRequireLower = cfg.PasswordRequireLower
+	domain.PasswordRequireDigit = cfg.PasswordRequireDigit
+	domain.PasswordRequireSpecial = cfg.PasswordRequireSpecial
+	log.Printf("jwt signing alg: %s", cfg.JWTSigningAlg)
+	log.Printf("setting hashcost to : HASH_COST=%v", domain.HASH_COST)
+	log.Printf("password policy: minLength=%d maxLength=%d requireUpper=%v requireLower=%v requireDigit=%v requireSpecial=%v",
+		domain.PasswordMinLength, domain.PasswordMaxLength, domain.PasswordRequireUpper, domain.PasswordRequireLower, domain.PasswordRequireDigit, domain.PasswordRequireSpecial)
+
+	// The configured root username is as off-limits for self-registration
+	// as the hardcoded names below — a configurable root account only
+	// stays privileged-and-singular if nobody else can register as it.
+	forbidden_names = append(forbidden_names, strings.ToLower(cfg.RootUsername))
+
+	return cfg
 }
 
 /*
 *
 * "constructor of minioth server central object" */
-func NewMSerivce(m *Minioth, conf string) MService {
-	cfg := LoadConfig(conf)
-	log.Print(cfg.ToString())
+func NewMService(m *domain.Minioth, cfg *config.EnvConfig) MService {
+	// Must happen before gin.Default() constructs the engine: it's what
+	// suppresses gin's verbose debug route/stack logging outside of
+	// GinMode == "debug".
+	gin.SetMode(cfg.GinMode)
 
-	srv := MService{
+	return MService{
 		Minioth: m,
 		Engine:  gin.Default(),
 		Config:  cfg,
 	}
-	jwtSecretKey = cfg.JWTSecretKey
-	jwtRefreshKey = cfg.JWTRefreshKey
-	jwksFilePath = cfg.JWKS
-	HASH_COST = cfg.HashCost
-	log.Printf("updating jwt key...: %s", jwtSecretKey)
-	log.Printf("updating jwt refresh key...: %s", jwtRefreshKey)
-	log.Printf("setting hashcost to : HASH_COST=%v", HASH_COST)
-	handler = m.handler
-
-	return srv
 }
 
 /* Should implement the following endpoints:
@@ -119,692 +133,17 @@ func NewMSerivce(m *Minioth, conf string) MService {
 func (srv *MService) ServeHTTP() {
 	minioth := srv.Minioth
 
+	srv.Engine.Use(auth.CORSMiddleware(srv.Config))
+
 	apiV1 := srv.Engine.Group("/" + VERSION)
-	{
-		apiV1.POST("/register", func(c *gin.Context) {
-			var uclaim RegisterClaim
-			err := c.BindJSON(&uclaim)
-			if err != nil {
-				log.Printf("error binding request body to struct: %v", err)
-				c.JSON(http.StatusBadRequest, gin.H{
-					"error": err.Error(),
-				})
-				return
-			}
+	registerAuthRoutes(apiV1, minioth)
 
-			// Verify user credentials
-			err = uclaim.validateUser()
-			if err != nil {
-				log.Printf("failed to validate: %v", err)
-				c.JSON(400, gin.H{
-					"error": err.Error(),
-				})
-				return
-			}
-			// Check for uniquness [ NOTE: Now its done internally ]
-			// Proceed with Registration
-			uid, pgroup, err := minioth.Useradd(uclaim.User)
-			if err != nil {
-				log.Print("failed to add user")
-				if strings.Contains(strings.ToLower(err.Error()), "alr") {
-					c.JSON(403, gin.H{"error": "already exists!"})
-				} else {
-					c.JSON(400, gin.H{
-						"error": "failed to insert the user",
-					})
-				}
-				return
-			}
-			// TODO: should insta "pseudo" login issue a token for registration.
-			// can I redirect to login?
-			c.JSON(200, gin.H{
-				"message":   fmt.Sprintf("User %v PGroup %v Registration successful!. Log in.", uid, pgroup),
-				"uid":       uid,
-				"pgroup":    pgroup,
-				"login_url": "/v1/login",
-			})
-		})
-
-		apiV1.POST("/login", func(c *gin.Context) {
-			var lclaim LoginClaim
-			err := c.BindJSON(&lclaim)
-			if err != nil {
-				log.Printf("error binding request body to struct: %v", err)
-				c.JSON(http.StatusBadRequest, gin.H{"error": "binding error"})
-				return
-			}
-
-			// Verify user credentials
-			err = lclaim.validateClaim()
-			if err != nil {
-				log.Printf("failed to validate: %v", err)
-				c.JSON(400, gin.H{
-					"error": err.Error(),
-				})
-				return
-			}
-
-			user, err := minioth.Authenticate(lclaim.Username, lclaim.Password)
-			if err != nil {
-				log.Printf("error: %v", err)
-				if strings.Contains(err.Error(), "not found") {
-					c.JSON(404, gin.H{"error": "user not found"})
-				} else {
-					c.JSON(400, gin.H{
-						"error": "failed to authenticate",
-					})
-				}
-				return
-			}
-
-			strGroups := groupsToString(user.Groups)
-			strGids := gidsToString(user.Groups)
-
-			var pgroup int
-			for _, group := range user.Groups {
-				if group.Name == user.Name {
-					pgroup = group.Gid
-				}
-			}
-			// TODO: should upgrde the way I create users.. need to be able to create admins as well...
-			// or perhaps make the root admin be able to "promote" a user
-			token, err := GenerateAccessJWT(strconv.Itoa(user.Uid), lclaim.Username, strGroups, strGids)
-			if err != nil {
-				log.Fatalf("failed generating jwt token: %v", err)
-			}
-
-			refreshToken, err := GenerateRefreshJWT(lclaim.Username)
-			if err != nil {
-				log.Fatalf("failed to generate refresh token: %v", err)
-			}
-
-			// for now return detailed information so that frontend is accomodated
-			// and followup authorization is provided (ids needed)
-			// NOTE: use Authorization header for now.
-			c.JSON(200, gin.H{
-				"username":      lclaim.Username,
-				"user_id":       user.Uid,
-				"groups":        strGroups,
-				"group_ids":     strGids,
-				"pgroup":        pgroup,
-				"access_token":  token,
-				"refresh_token": refreshToken,
-			})
-		})
-
-		apiV1.POST("/token/refresh", func(c *gin.Context) {
-			var requestBody struct {
-				RefreshToken string `json:"refresh_token" binding:"required"`
-			}
-
-			if err := c.BindJSON(&requestBody); err != nil {
-				c.JSON(http.StatusBadRequest, gin.H{
-					"error": "refresh_token required",
-				})
-				return
-			}
-
-			refreshToken := requestBody.RefreshToken
-			token, err := jwt.ParseWithClaims(refreshToken, &CustomClaims{}, func(token *jwt.Token) (interface{}, error) {
-				if _, ok := token.Method.(*jwt.SigningMethodHMAC); ok {
-					return nil, fmt.Errorf("unexpected signing method")
-				}
-				return jwtRefreshKey, nil
-			})
-
-			if err != nil || !token.Valid {
-				c.JSON(http.StatusUnauthorized, gin.H{
-					"error": "invalid refresh token",
-				})
-				return
-			}
-
-			claims, ok := token.Claims.(*CustomClaims)
-			if !ok {
-				c.JSON(http.StatusUnauthorized, gin.H{
-					"error": "invalid claims",
-				})
-				return
-			}
-			newAccessToken, err := GenerateAccessJWT(claims.UserID, claims.Username, claims.Groups, claims.GroupIDS)
-			if err != nil {
-				log.Printf("error generating new access token: %v", err)
-				c.JSON(http.StatusInternalServerError, gin.H{
-					"error": "error generating access_token",
-				})
-				return
-			}
-
-			newRefreshToken, err := GenerateRefreshJWT(claims.UserID)
-			if err != nil {
-				log.Printf("error generating new refresh token: %v", err)
-				c.JSON(http.StatusInternalServerError, gin.H{
-					"error": "error generating refresh_token",
-				})
-				return
-			}
-
-			c.JSON(http.StatusOK, gin.H{
-				"access_token":  newAccessToken,
-				"refresh_token": newRefreshToken,
-			})
-		})
-
-		apiV1.GET("/user/token", func(c *gin.Context) {
-			authHeader := c.GetHeader("Authorization")
-			if authHeader == "" {
-				c.JSON(http.StatusUnauthorized, gin.H{"error": "Authorization header is required"})
-				c.Abort()
-				return
-			}
-
-			if !strings.Contains(authHeader, "Bearer ") {
-				c.JSON(http.StatusBadRequest, gin.H{"error": "must contain Bearer token"})
-				c.Abort()
-				return
-			}
-			// Extract the token from the Authorization header
-			tokenString := authHeader[len("Bearer "):]
-			if tokenString == "" {
-				c.JSON(http.StatusUnauthorized, gin.H{"error": "Bearer token is required"})
-				c.Abort()
-				return
-			}
-
-			// Parse and validate the token
-			token, err := jwt.ParseWithClaims(tokenString, &CustomClaims{}, func(token *jwt.Token) (interface{}, error) {
-				if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
-					return nil, fmt.Errorf("unexpected signing method: %v", token.Header["alg"])
-				}
-				return jwtSecretKey, nil
-			})
-
-			if err != nil || !token.Valid {
-				token, err = jwt.ParseWithClaims(tokenString, &CustomClaims{}, func(token *jwt.Token) (interface{}, error) {
-					if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
-						return nil, fmt.Errorf("unexpected signing method: %v", token.Header["alg"])
-					}
-					return jwtRefreshKey, nil
-				})
-			}
-
-			if err != nil {
-				log.Printf("%v token, exiting", token)
-				c.JSON(http.StatusBadRequest, gin.H{
-					"error": "bad token",
-				})
-				c.Abort()
-				return
-			}
-
-			claims, ok := token.Claims.(*CustomClaims)
-			if !ok {
-				log.Printf("not okay when retrieving claims")
-				return
-			}
-
-			response := make(map[string]string)
-			response["valid"] = strconv.FormatBool(token.Valid)
-			response["user_id"] = claims.UserID
-			response["username"] = claims.Username
-			response["groups"] = claims.Groups
-			response["group_ids"] = claims.GroupIDS
-			response["issued_at"] = claims.IssuedAt.String()
-			response["expires_at"] = claims.ExpiresAt.String()
-
-			c.JSON(http.StatusOK, gin.H{
-				"info": response,
-			})
-		})
-
-		apiV1.GET("/user/me", func(c *gin.Context) {
-			authHeader := c.GetHeader("Authorization")
-			if authHeader == "" {
-				log.Printf("no auth header")
-				c.JSON(http.StatusUnauthorized, gin.H{"error": "Authorization header is required"})
-				c.Abort()
-				return
-			}
-
-			if !strings.Contains(authHeader, "Bearer ") {
-				log.Printf("no bearer")
-				c.JSON(http.StatusBadRequest, gin.H{"error": "must contain Bearer token"})
-				c.Abort()
-				return
-			}
-			// Extract the token from the Authorization header
-			tokenString := authHeader[len("Bearer "):]
-			if tokenString == "" {
-				log.Printf("no bearer token found")
-				c.JSON(http.StatusUnauthorized, gin.H{"error": "Bearer token is required"})
-				c.Abort()
-				return
-			}
-
-			// Parse and validate the token
-			token, err := jwt.ParseWithClaims(tokenString, &CustomClaims{}, func(token *jwt.Token) (interface{}, error) {
-				if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
-					return nil, fmt.Errorf("unexpected signing method: %v", token.Header["alg"])
-				}
-				return jwtSecretKey, nil
-			})
-
-			if err != nil || !token.Valid {
-				token, err = jwt.ParseWithClaims(tokenString, &CustomClaims{}, func(token *jwt.Token) (interface{}, error) {
-					if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
-						return nil, fmt.Errorf("unexpected signing method: %v", token.Header["alg"])
-					}
-					return jwtRefreshKey, nil
-				})
-			}
-
-			if err != nil {
-				log.Printf("%v token, exiting", token)
-				c.JSON(http.StatusBadRequest, gin.H{
-					"error": "bad token",
-				})
-				c.Abort()
-				return
-			}
-
-			claims, ok := token.Claims.(*CustomClaims)
-			if !ok {
-				log.Printf("not okay when retrieving claims")
-				return
-			}
-
-			user := minioth.Select("users?uid=" + claims.UserID)
-
-			if len(user) != 1 {
-				c.JSON(http.StatusNotFound, gin.H{"status": "not found"})
-				return
-			} else {
-				c.JSON(http.StatusOK, user[0])
-			}
-		})
-
-		/* This endpoint should change a user password. It must "authenticate" the user. User can only change his password. */
-		apiV1.POST("/passwd", func(c *gin.Context) {
-			var lclaim LoginClaim
-			err := c.BindJSON(&lclaim)
-			if err != nil {
-				log.Printf("error binding request body to struct: %v", err)
-				c.JSON(http.StatusBadRequest, gin.H{"error": "binding error"})
-				return
-			}
-
-			pass := Password{
-				Hashpass: lclaim.Password,
-			}
-			// Verify user credentials
-			if lclaim.Password == "" {
-				c.JSON(400, gin.H{
-					"error": "no password provided",
-				})
-				return
-			} else if err := pass.validatePassword(); err != nil {
-				c.JSON(400, gin.H{
-					"error": err.Error(),
-				})
-				return
-			}
-
-			err = minioth.Passwd(lclaim.Username, lclaim.Password)
-			if err != nil {
-				log.Printf("failed to change password: %v", err)
-				c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to change password"})
-				return
-			}
-
-			c.JSON(200, gin.H{"status": "password changed successfully"})
-		})
-	}
-
-	/* admin endpoints */
 	admin := apiV1.Group("/admin")
-	admin.Use(AuthMiddleware("admin", srv))
-	{
-		// just a login with no token issueing
-		admin.POST("/verify-password", func(c *gin.Context) {
-			var lclaim LoginClaim
-			err := c.BindJSON(&lclaim)
-			if err != nil {
-				log.Printf("error binding request body to struct: %v", err)
-				c.JSON(http.StatusBadRequest, gin.H{"error": "binding error"})
-				return
-			}
-
-			// Verify user credentials
-			err = lclaim.validateClaim()
-			if err != nil {
-				log.Printf("failed to validate: %v", err)
-				c.JSON(400, gin.H{
-					"error": err.Error(),
-				})
-				return
-			}
-
-			_, err = minioth.Authenticate(lclaim.Username, lclaim.Password)
-			if err != nil {
-				log.Printf("error: %v", err)
-				if strings.Contains(err.Error(), "not found") {
-					c.JSON(404, gin.H{"error": "user not found"})
-				} else {
-					c.JSON(400, gin.H{
-						"error": "invalid",
-					})
-				}
-				return
-			}
-			c.JSON(http.StatusOK, gin.H{"status": "valid"})
-
-		})
-		admin.POST("/hasher", func(c *gin.Context) {
-			var b struct {
-				HashAlg  string `json:"hashalg"`
-				HashText string `json:"hash"`
-				Text     string `json:"text"`
-				HashCost int    `json:"hashcost"`
-			}
-			err := c.BindJSON(&b)
-			if err != nil {
-				log.Printf("error binding request body to struct: %v", err)
-				c.JSON(400, gin.H{"error": "binding"})
-				return
-			}
-
-			hashed, err := hash_cost([]byte(b.Text), b.HashCost)
-			if err != nil {
-				log.Printf("error hasing the text: %v", err)
-				c.JSON(500, gin.H{"error": "hashing"})
-				return
-			}
-
-			if b.HashText == "" {
-				c.JSON(200, gin.H{"result": string(hashed)})
-			} else {
-				c.JSON(200, gin.H{"result": strconv.FormatBool(verifyPass([]byte(b.HashText), []byte(b.Text)))})
-			}
-		})
-
-		admin.GET("/audit/logs", func(c *gin.Context) {
-		})
-
-		admin.GET("/users", func(c *gin.Context) {
-			users := minioth.Select("users?uid=" + c.Request.URL.Query().Get("uid"))
-
-			c.JSON(http.StatusOK, gin.H{
-				"content": users,
-			})
-		})
-
-		admin.GET("/groups", func(c *gin.Context) {
-			groups := minioth.Select("groups")
-
-			c.JSON(http.StatusOK, gin.H{
-				"content": groups,
-			})
-		})
-
-		/* same as register but dont verify content */
-		admin.POST("/useradd", func(c *gin.Context) {
-			var uclaim RegisterClaim
-			err := c.BindJSON(&uclaim)
-			if err != nil {
-				log.Printf("error binding request body to struct: %v", err)
-				c.JSON(http.StatusBadRequest, gin.H{
-					"error": err.Error(),
-				})
-				return
-			}
-
-			uid, pgroup, err := minioth.Useradd(uclaim.User)
-			if err != nil {
-				log.Print("failed to add user")
-				if strings.Contains(strings.ToLower(err.Error()), "") {
-					c.JSON(403, gin.H{"error": "already exists!"})
-				} else {
-					c.JSON(400, gin.H{
-						"error": "failed to insert the user",
-					})
-				}
-				return
-			}
-
-			// TODO: should insta "pseudo" login issue a token for registration.
-			// can I redirect to login?
-			c.JSON(200, gin.H{
-				"message":   fmt.Sprintf("User %v added.", uid),
-				"uid":       uid,
-				"pgroup":    pgroup,
-				"login_url": "sure",
-			})
-		})
-
-		admin.DELETE("/userdel", func(c *gin.Context) {
-			uid := c.Query("uid")
-			if uid == "" {
-				c.JSON(http.StatusBadRequest, gin.H{"error": "uid is required"})
-				return
-			}
-
-			err := minioth.Userdel(uid)
-			if err != nil {
-				if strings.Contains(err.Error(), "not found") {
-					c.JSON(http.StatusNotFound, gin.H{"error": "user not found"})
-				} else if strings.Contains(err.Error(), "root") {
-					c.JSON(400, gin.H{"error": "really bro?"})
-				} else {
-					c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to delete user"})
-				}
-
-				return
-			}
-
-			c.JSON(http.StatusOK, gin.H{"message": "user deleted successfully"})
-		})
-
-		admin.PATCH("/userpatch", func(c *gin.Context) {
-			var updateFields map[string]interface{}
-			if err := c.ShouldBindJSON(&updateFields); err != nil {
-				log.Printf("failed to bind req body: %v", err)
-				c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request body"})
-				return
-			}
-
-			uidValue, ok := updateFields["uid"]
-			if !ok {
-				log.Printf("uid is not ok: %v", uidValue)
-				c.JSON(http.StatusBadRequest, gin.H{"error": "uid is required"})
-				return
-			}
-			var uid string
-			switch v := uidValue.(type) {
-			case string:
-				uid = v
-			case float64:
-				uid = fmt.Sprintf("%.0f", v)
-			case int:
-				uid = strconv.Itoa(v)
-			default:
-				log.Printf("uid type not supported: %T", v)
-				c.JSON(http.StatusBadRequest, gin.H{"error": "invalid uid format"})
-				return
-			}
-
-			switch uid {
-			case "":
-				log.Print("empty uid")
-
-			case "0":
-				log.Print("sm1 is trying to change the root..")
-				c.JSON(400, gin.H{"error": "not allowed"})
-				return
-			}
-
-			err := minioth.Userpatch(uid, updateFields)
-			if err != nil {
-				log.Printf("failed to patch user: %v", err)
-				if err.Error() == "no inputs" {
-					c.JSON(404, gin.H{"error": "bad request"})
-					return
-				}
-				c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to update user"})
-				return
-			}
-
-			c.JSON(http.StatusOK, gin.H{"message": "user patched successfully"})
-		})
-
-		admin.PUT("/usermod", func(c *gin.Context) {
-			var ruser RegisterClaim
-			if err := c.ShouldBindJSON(&ruser); err != nil {
-				c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request body"})
-				return
-			}
-
-			log.Printf("user %+v", ruser)
-
-			err := ruser.validateUser()
-			if err != nil {
-				log.Printf("invalid user, cannot update: %v", err)
-				c.JSON(http.StatusBadRequest, gin.H{"error": "bad input format"})
-				return
-			}
-
-			err = minioth.Usermod(ruser.User)
-			if err != nil {
-				c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to update user"})
-				return
-			}
-
-			c.JSON(http.StatusOK, gin.H{"message": "User updated successfully"})
-		})
-
-		admin.POST("/groupadd", func(c *gin.Context) {
-			var group Group
-			if err := c.ShouldBindJSON(&group); err != nil {
-				log.Printf("Invalid group data: %v", err)
-				c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid group data"})
-				return
-			}
-
-			if _, err := minioth.Groupadd(group); err != nil {
-				log.Printf("Failed to add group: %v", err)
-				c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to add group"})
-				return
-			}
-
-			c.JSON(http.StatusCreated, gin.H{"message": "Group added successfully"})
-		})
-
-		admin.PATCH("/grouppatch", func(c *gin.Context) {
-			var payload struct {
-				Fields map[string]interface{} `json:"fields" binding:"required"`
-				Gid    string                 `json:"gid" binding:"required"`
-			}
-			if err := c.ShouldBindJSON(&payload); err != nil {
-				log.Printf("Invalid patch payload: %v", err)
-				c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid patch payload"})
-				return
-			}
-
-			if err := minioth.Grouppatch(payload.Gid, payload.Fields); err != nil {
-				log.Printf("Failed to patch group: %v", err)
-				c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to patch group"})
-				return
-			}
-
-			c.JSON(http.StatusOK, gin.H{"message": "Group patched successfully"})
-		})
-
-		admin.PUT("/groupmod", func(c *gin.Context) {
-			var group Group
-			if err := c.ShouldBindJSON(&group); err != nil {
-				log.Printf("Invalid group data: %v", err)
-				c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid group data"})
-				return
-			}
-
-			if err := minioth.Groupmod(group); err != nil {
-				log.Printf("Failed to modify group: %v", err)
-				c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to modify group"})
-				return
-			}
-
-			c.JSON(http.StatusOK, gin.H{"message": "Group modified successfully"})
-		})
-
-		admin.DELETE("/groupdel", func(c *gin.Context) {
-			gid := c.Query("gid")
-			if gid == "" {
-				log.Print("gid is required")
-				c.JSON(http.StatusBadRequest, gin.H{"error": "gid is required"})
-				return
-			}
-
-			if err := minioth.Groupdel(gid); err != nil {
-				log.Printf("Failed to delete group: %v", err)
-				c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to delete group"})
-				return
-			}
-
-			c.JSON(http.StatusOK, gin.H{"message": "Group deleted successfully"})
-		})
-	}
+	admin.Use(auth.AuthMiddleware("admin", srv.Config))
+	registerAdminRoutes(admin, minioth)
 
 	wellknown := apiV1.Group("/.well-known")
-	{
-		wellknown.GET("/minioth", func(c *gin.Context) {
-			c.JSON(http.StatusOK, gin.H{
-				"version": "0.0.1",
-				"status":  "alive",
-			})
-		})
-		wellknown.GET("/openid-configuration", func(c *gin.Context) {
-			c.JSON(http.StatusOK, gin.H{
-				"issuer":   srv.Config.ISSUER,
-				"jwks_uri": fmt.Sprintf("%s/.well-known/jwks.json", srv.Config.ISSUER),
-				// "authorization_endpoint":                fmt.Sprintf("%s/%s/login", srv.Config.ISSUER, VERSION),
-				"token_endpoint":                        fmt.Sprintf("%s/%s/login", srv.Config.ISSUER, VERSION),
-				"userinfo_endpoint":                     fmt.Sprintf("%s/%s/user/me", srv.Config.ISSUER, VERSION),
-				"id_token_signing_alg_values_supported": "HS256",
-			})
-		})
-
-		wellknown.GET("/jwks.json", func(c *gin.Context) {
-
-			cpth, err := os.Getwd()
-			if err != nil {
-				log.Printf("failed to get cwd: %v", err)
-				return
-			}
-			log.Printf("current working dir: %s", cpth)
-			jwksFile, err := os.Open(jwksFilePath)
-			if err != nil {
-				log.Printf("failed to open jwks.json file: %v", err)
-				c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to load JWKS"})
-				return
-			}
-			defer jwksFile.Close()
-
-			jwksData, err := io.ReadAll(jwksFile)
-			if err != nil {
-				log.Printf("failed to read jwks.json file: %v", err)
-				c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to read JWKS"})
-				return
-			}
-
-			var jwks map[string]any
-			if err := json.Unmarshal(jwksData, &jwks); err != nil {
-				log.Printf("failed to parse jwks.json file: %v", err)
-				c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to parse JWKS"})
-				return
-			}
-
-			c.JSON(http.StatusOK, jwks)
-		})
-	}
+	registerWellKnownRoutes(wellknown, srv)
 
 	server := &http.Server{
 		Addr:              srv.Config.Addr(),
@@ -812,18 +151,34 @@ func (srv *MService) ServeHTTP() {
 		ReadHeaderTimeout: time.Second * 5,
 	}
 
+	// Both set: serve HTTPS directly, for deployments that won't sit
+	// behind a TLS-terminating reverse proxy. Neither set: plain HTTP, as
+	// before. One set without the other is a misconfiguration — fail fast
+	// rather than let ListenAndServeTLS produce a more confusing error.
+	useTLS := srv.Config.TLSCertFile != "" && srv.Config.TLSKeyFile != ""
+	if (srv.Config.TLSCertFile != "") != (srv.Config.TLSKeyFile != "") {
+		log.Fatalf("TLS_CERT_FILE and TLS_KEY_FILE must both be set, or both left empty")
+	}
+
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
 	go func() {
-		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+		var err error
+		if useTLS {
+			log.Printf("serving TLS on %s", srv.Config.Addr())
+			err = server.ListenAndServeTLS(srv.Config.TLSCertFile, srv.Config.TLSKeyFile)
+		} else {
+			err = server.ListenAndServe()
+		}
+		if err != nil && err != http.ErrServerClosed {
 			log.Fatalf("listen: %s\n", err)
 		}
 	}()
 	<-ctx.Done()
 
 	log.Print("closing db connection...")
-	handler.Close()
+	minioth.Close()
 
 	stop()
 	log.Println("shutting down gracefully, press Ctrl+C again to force")
@@ -837,79 +192,13 @@ func (srv *MService) ServeHTTP() {
 	log.Println("Server exiting")
 }
 
-/* For this service, authorization is required only for admin role. */
-func AuthMiddleware(role string, srv *MService) gin.HandlerFunc {
-	return func(c *gin.Context) {
-		// if service secret exists and validated, grant access
-		if s_secret_claim := c.GetHeader("X-Service-Secret"); s_secret_claim != "" {
-			if s_secret_claim == string(srv.Config.ServiceSecret) {
-				log.Printf("service secret accepted. access granted.")
-				c.Next()
-				return
-			} else {
-				log.Printf("service secret invalid. access not granted")
-				c.Abort()
-				return
-			}
-		}
-
-		authHeader := c.GetHeader("Authorization")
-		if authHeader == "" {
-			c.JSON(http.StatusUnauthorized, gin.H{"error": "Authorization header is required"})
-			c.Abort()
-			return
-		}
-
-		// Extract the token from the Authorization header
-		tokenString := authHeader[len("Bearer "):]
-		if tokenString == "" {
-			c.JSON(http.StatusUnauthorized, gin.H{"error": "Bearer token is required"})
-			c.Abort()
-			return
-		}
-
-		// Parse and validate the token
-		token, err := jwt.ParseWithClaims(tokenString, &CustomClaims{}, func(token *jwt.Token) (interface{}, error) {
-			if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
-				return nil, fmt.Errorf("unexpected signing method: %v", token.Header["alg"])
-			}
-			return jwtSecretKey, nil
-		})
-
-		if err != nil || !token.Valid {
-			c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid token"})
-			c.Abort()
-			return
-		}
-
-		// Set claims in the context for further use
-		if claims, ok := token.Claims.(*CustomClaims); ok {
-			if !strings.Contains(claims.Groups, role) {
-				c.JSON(http.StatusUnauthorized, gin.H{
-					"error": "invalid user",
-				})
-				c.Abort()
-				return
-			}
-			c.Set("username", claims.UserID)
-			c.Set("groups", claims.Groups)
-		} else {
-			c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid token claims"})
-			c.Abort()
-			return
-		}
-
-		c.Next()
-	}
-}
-
 /* Filter incoming login and register requests. Don't allow wierd chars...*/
 func (l *LoginClaim) validateClaim() error {
 	if l.Username == "" {
 		return errors.New("username cannot be empty")
 	}
 
-	if !IsAlphanumericPlus(l.Username) {
+	if !util.IsAlphanumericPlus(l.Username) {
 		return fmt.Errorf("username %q is invalid: only alphanumeric chararctes[@+] are allowed", l.Username)
 	}
 
@@ -929,7 +218,7 @@ func (u *RegisterClaim) validateUser() error {
 		return errors.New("username off limits")
 	}
 
-	if !IsAlphanumericPlus(u.User.Name) {
+	if !util.IsAlphanumericPlus(u.User.Name) {
 		return fmt.Errorf("username %q is invalid: only alphanumeric characters[@+] are allowed", u.User.Name)
 	}
 
@@ -947,7 +236,7 @@ func (u *RegisterClaim) validateUser() error {
 		return fmt.Errorf("primary group '%d' is invalid: must be a non-negative integer", u.User.Pgroup)
 	}
 
-	if err := u.User.Password.validatePassword(); err != nil {
+	if err := u.User.Password.ValidatePassword(); err != nil {
 		return fmt.Errorf("password validation error: %w", err)
 	}
 
@@ -955,104 +244,15 @@ func (u *RegisterClaim) validateUser() error {
 }
 
 /* functions */
-/* just a function to see if a given name is in input */
+/* checks a given name against the forbidden list, case-insensitively — a
+* user shouldn't be able to grab "Root" or "ROOT" just because offLimits()
+* only ever checked the exact lowercase spelling. */
 func offLimits(str string) bool {
+	lower := strings.ToLower(str)
 	for _, name := range forbidden_names {
-		if str == name {
+		if lower == name {
 			return true
 		}
 	}
 	return false
-}
-
-// jwt
-func GenerateAccessJWT(userID, username, groups, gids string) (string, error) {
-	// Set the claims for the token
-	claims := CustomClaims{
-		UserID:   userID,
-		Username: username,
-		Groups:   groups,
-		GroupIDS: gids,
-		RegisteredClaims: jwt.RegisteredClaims{
-			Issuer:    "minioth",
-			ExpiresAt: jwt.NewNumericDate(time.Now().Add(time.Hour * time.Duration(JWT_VALIDITY_HOURS))),
-			IssuedAt:  jwt.NewNumericDate(time.Now()),
-			Subject:   userID,
-		},
-	}
-
-	// Create the token using the HS256 signing method
-	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
-
-	// Sign the token using the secret key
-	tokenString, err := token.SignedString(jwtSecretKey)
-	if err != nil {
-		return "", fmt.Errorf("failed to sign token: %w", err)
-	}
-
-	return tokenString, nil
-}
-
-func DecodeJWT(tokenString string) (bool, *CustomClaims, error) {
-	// Parse and validate the token
-	token, err := jwt.ParseWithClaims(tokenString, &CustomClaims{}, func(token *jwt.Token) (interface{}, error) {
-		if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
-			return nil, fmt.Errorf("unexpected signing method: %v", token.Header["alg"])
-		}
-		return jwtSecretKey, nil
-	})
-
-	if err != nil || !token.Valid {
-		token, err = jwt.ParseWithClaims(tokenString, &CustomClaims{}, func(token *jwt.Token) (interface{}, error) {
-			if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
-				return nil, fmt.Errorf("unexpected signing method: %v", token.Header["alg"])
-			}
-			return jwtRefreshKey, nil
-		})
-	}
-
-	if err != nil {
-		log.Printf("%v token, exiting", token)
-		return false, nil, err
-	}
-
-	claims, ok := token.Claims.(*CustomClaims)
-	if !ok {
-		log.Printf("not okay when retrieving claims")
-		return false, nil, errors.New("invalid claims")
-	}
-
-	return true, claims, nil
-}
-
-func GenerateRefreshJWT(userID string) (string, error) {
-	claims := CustomClaims{
-		UserID: userID,
-		Groups: "not-needed",
-		RegisteredClaims: jwt.RegisteredClaims{
-			ExpiresAt: jwt.NewNumericDate(time.Now().Add(time.Hour * 72)), // Token expiration time (24 hours)
-			IssuedAt:  jwt.NewNumericDate(time.Now()),
-		},
-	}
-
-	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
-	return token.SignedString(jwtRefreshKey)
-}
-
-func groupsToString(groups []Group) string {
-	var res []string
-
-	for _, group := range groups {
-		res = append(res, group.toString())
-	}
-
-	return strings.Join(res, ",")
-}
-
-func gidsToString(groups []Group) string {
-	var res []string
-	for _, group := range groups {
-		res = append(res, strconv.Itoa(group.Gid))
-	}
-	return strings.Join(res, ",")
 }
