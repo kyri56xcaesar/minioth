@@ -1,0 +1,15 @@
+services:
+  minioth:
+    build: .
+    ports:
+      - "9090:9090"
+    volumes:
+      - minioth-data:/data
+      # Real secrets — never baked into the image. Copy
+      # minioth.env.template to minioth.env, fill it in, keep it out of
+      # git (it already is — see .gitignore).
+      - ./minioth.env:/app/minioth.env:ro
+    # command: ["-backend=plain", "-data-dir=/data", "-conf=/app/minioth.env"]  # to use the flat-file backend instead
+
+volumes:
+  minioth-data:

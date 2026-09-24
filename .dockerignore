@@ -1,0 +1,6 @@
+.git
+data
+graphify-out
+*.db
+minioth.env
+tests
