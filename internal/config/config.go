@@ -67,6 +67,15 @@ type EnvConfig struct {
 	PasswordRequireLower   bool
 	PasswordRequireDigit   bool
 	PasswordRequireSpecial bool
+
+	// RateLimitRPS/RateLimitBurst configure the per-client-IP token bucket
+	// (internal/auth's RateLimitMiddleware) applied to credential-sensitive
+	// routes (register, login, password change/reset — see
+	// registerAuthRoutes). RateLimitRPS is the sustained rate; RateLimitBurst
+	// is how many requests can arrive back-to-back before that sustained
+	// rate kicks in.
+	RateLimitRPS   float64
+	RateLimitBurst int
 }
 
 func LoadConfig(path string) *EnvConfig {
@@ -117,6 +126,9 @@ func LoadConfig(path string) *EnvConfig {
 		PasswordRequireLower:   getEnvBool("PASSWORD_REQUIRE_LOWER", false),
 		PasswordRequireDigit:   getEnvBool("PASSWORD_REQUIRE_DIGIT", false),
 		PasswordRequireSpecial: getEnvBool("PASSWORD_REQUIRE_SPECIAL", false),
+
+		RateLimitRPS:   getEnvFloat("RATE_LIMIT_RPS", 2),
+		RateLimitBurst: getEnvInt("RATE_LIMIT_BURST", 10),
 	}
 
 	return config
@@ -236,6 +248,16 @@ func getEnvInt(key string, fallback int) int {
 			return n
 		}
 		log.Printf("invalid int value for %s, using default %d", key, fallback)
+	}
+	return fallback
+}
+
+func getEnvFloat(key string, fallback float64) float64 {
+	if value, exists := os.LookupEnv(key); exists {
+		if f, err := strconv.ParseFloat(value, 64); err == nil {
+			return f
+		}
+		log.Printf("invalid float value for %s, using default %v", key, fallback)
 	}
 	return fallback
 }

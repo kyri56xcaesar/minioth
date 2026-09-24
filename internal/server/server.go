@@ -136,7 +136,7 @@ func (srv *MService) ServeHTTP() {
 	srv.Engine.Use(auth.CORSMiddleware(srv.Config))
 
 	apiV1 := srv.Engine.Group("/" + VERSION)
-	registerAuthRoutes(apiV1, minioth)
+	registerAuthRoutes(apiV1, minioth, srv.Config)
 
 	admin := apiV1.Group("/admin")
 	admin.Use(auth.AuthMiddleware("admin", srv.Config))
