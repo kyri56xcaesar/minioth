@@ -1136,7 +1136,7 @@ func (m *DBHandler) Select(id string) []interface{} {
 }
 
 func (m *DBHandler) Authenticate(username, password string) (*domain.User, error) {
-	log.Printf("authenticating user... %q:%q", username, password)
+	log.Printf("authenticating user... %q", username)
 
 	db, err := m.getConn()
 	if err != nil {
