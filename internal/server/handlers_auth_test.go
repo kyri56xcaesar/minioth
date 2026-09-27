@@ -2,6 +2,7 @@ package server
 
 import (
 	"net/http"
+	"strconv"
 	"testing"
 
 	"github.com/gin-gonic/gin"
@@ -90,7 +91,7 @@ func TestLoginUnknownUser(t *testing.T) {
 
 func TestTokenRefresh(t *testing.T) {
 	h := newTestHarness(t)
-	h.registerUser(t, "erin", "erinpass123", "")
+	uid := h.registerUser(t, "erin", "erinpass123", "")
 
 	rec := h.do(t, http.MethodPost, "/v1/login", gin.H{"username": "erin", "password": "erinpass123"}, nil)
 	var login struct {
@@ -109,6 +110,26 @@ func TestTokenRefresh(t *testing.T) {
 	decode(t, rec, &refreshed)
 	if refreshed.AccessToken == "" || refreshed.RefreshToken == "" {
 		t.Errorf("expected a new access/refresh pair, got access=%q refresh=%q", refreshed.AccessToken, refreshed.RefreshToken)
+	}
+
+	// The refreshed access token must describe the same user as a login
+	// token does: it used to carry the username as user_id and no groups.
+	rec = h.do(t, http.MethodGet, "/v1/user/token", nil, bearer(refreshed.AccessToken))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("introspect refreshed token = %d, body %s", rec.Code, rec.Body.String())
+	}
+	var info struct {
+		Info map[string]string `json:"info"`
+	}
+	decode(t, rec, &info)
+	if got := info.Info["user_id"]; got != strconv.Itoa(uid) {
+		t.Errorf("refreshed user_id = %q, want %d", got, uid)
+	}
+	if info.Info["username"] != "erin" || info.Info["groups"] == "" || info.Info["group_ids"] == "" {
+		t.Errorf("refreshed token lost identity: %+v", info.Info)
+	}
+	if info.Info["pgroup"] == "" || info.Info["pgroup"] == "0" {
+		t.Errorf("refreshed token has no primary group: %+v", info.Info)
 	}
 
 	// A refresh token must not authenticate its own endpoint — only the

@@ -50,6 +50,9 @@ type CustomClaims struct {
 	Username string `json:"username"`
 	Groups   string `json:"groups"`
 	GroupIDS string `json:"group_ids"`
+	// PGroup is the user's primary group id (the group named after them),
+	// e.g. the group new files belong to.
+	PGroup string `json:"pgroup,omitempty"`
 	jwt.RegisteredClaims
 }
 
@@ -154,12 +157,13 @@ func signingKeyFor(alg string) (interface{}, error) {
 	}
 }
 
-func GenerateAccessJWT(userID, username, groups, gids string) (string, error) {
+func GenerateAccessJWT(userID, username, groups, gids, pgroup string) (string, error) {
 	claims := CustomClaims{
 		UserID:   userID,
 		Username: username,
 		Groups:   groups,
 		GroupIDS: gids,
+		PGroup:   pgroup,
 		RegisteredClaims: jwt.RegisteredClaims{
 			Issuer:    "minioth",
 			ExpiresAt: jwt.NewNumericDate(time.Now().Add(time.Hour * time.Duration(JWT_VALIDITY_HOURS))),

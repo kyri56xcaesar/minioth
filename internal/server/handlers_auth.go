@@ -99,16 +99,7 @@ func (h *AuthHandler) Login(c *gin.Context) {
 		return
 	}
 
-	strGroups := domain.GroupsToString(user.Groups)
-	strGids := domain.GidsToString(user.Groups)
-
-	var pgroup int
-	for _, group := range user.Groups {
-		if group.Name == user.Name {
-			pgroup = group.Gid
-		}
-	}
-	token, err := auth.GenerateAccessJWT(strconv.Itoa(user.Uid), lclaim.Username, strGroups, strGids)
+	token, strGroups, strGids, pgroup, err := issueAccessToken(*user)
 	if err != nil {
 		// A signing failure is this request's problem, not the whole
 		// process's — it must not take the server down.
@@ -117,7 +108,7 @@ func (h *AuthHandler) Login(c *gin.Context) {
 		return
 	}
 
-	refreshToken, err := auth.GenerateRefreshJWT(lclaim.Username)
+	refreshToken, err := auth.GenerateRefreshJWT(strconv.Itoa(user.Uid))
 	if err != nil {
 		log.Printf("failed to generate refresh token: %v", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to issue token"})
@@ -158,7 +149,19 @@ func (h *AuthHandler) RefreshToken(c *gin.Context) {
 		return
 	}
 
-	newAccessToken, err := auth.GenerateAccessJWT(claims.UserID, claims.Username, claims.Groups, claims.GroupIDS)
+	// Re-read the user: a refresh token only carries the uid, and the new
+	// access token must reflect the user's current groups.
+	found := h.Minioth.Select("users?uid=" + claims.UserID)
+	if len(found) != 1 {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid refresh token"})
+		return
+	}
+	user, ok := found[0].(domain.User)
+	if !ok {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "error generating access_token"})
+		return
+	}
+	newAccessToken, _, _, _, err := issueAccessToken(user)
 	if err != nil {
 		log.Printf("error generating new access token: %v", err)
 		c.JSON(http.StatusInternalServerError, gin.H{
@@ -206,6 +209,7 @@ func (h *AuthHandler) TokenInfo(c *gin.Context) {
 	response["username"] = claims.Username
 	response["groups"] = claims.Groups
 	response["group_ids"] = claims.GroupIDS
+	response["pgroup"] = claims.PGroup
 	response["issued_at"] = claims.IssuedAt.String()
 	response["expires_at"] = claims.ExpiresAt.String()
 
@@ -444,4 +448,21 @@ func (h *AuthHandler) ResetPassword(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, gin.H{"status": "password reset successfully"})
+}
+
+// issueAccessToken signs an access token for user, returning it with the
+// groups, group ids and primary group it encodes. The primary group is the
+// group named after the user (falling back to the stored pgroup).
+func issueAccessToken(user domain.User) (string, string, string, int, error) {
+	strGroups := domain.GroupsToString(user.Groups)
+	strGids := domain.GidsToString(user.Groups)
+	pgroup := user.Pgroup
+	for _, group := range user.Groups {
+		if group.Name == user.Name {
+			pgroup = group.Gid
+		}
+	}
+	token, err := auth.GenerateAccessJWT(strconv.Itoa(user.Uid), user.Name, strGroups, strGids, strconv.Itoa(pgroup))
+
+	return token, strGroups, strGids, pgroup, err
 }

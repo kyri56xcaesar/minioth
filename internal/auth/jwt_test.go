@@ -15,7 +15,7 @@ import (
 func TestJWTRoundTripHS256(t *testing.T) {
 	defer setJWTState(t, "HS256", []byte("test-secret"), []byte("test-refresh"))()
 
-	token, err := GenerateAccessJWT("1000", "alice", "user", "1000")
+	token, err := GenerateAccessJWT("1000", "alice", "user", "1000", "1000")
 	if err != nil {
 		t.Fatalf("failed to generate token: %v", err)
 	}
@@ -59,7 +59,7 @@ func TestJWTRoundTripRS256(t *testing.T) {
 		JWTRSAPrivateKeyPath: keyPath,
 	})
 
-	token, err := GenerateAccessJWT("1000", "alice", "user", "1000")
+	token, err := GenerateAccessJWT("1000", "alice", "user", "1000", "1000")
 	if err != nil {
 		t.Fatalf("failed to generate token: %v", err)
 	}
@@ -91,7 +91,7 @@ func TestJWTRoundTripRS256(t *testing.T) {
 // (token.Method.Alg() != jwtSigningAlg).
 func TestJWTRejectsAlgMismatch(t *testing.T) {
 	restore := setJWTState(t, "HS256", []byte("test-secret"), []byte("test-refresh"))
-	token, err := GenerateAccessJWT("1000", "alice", "user", "1000")
+	token, err := GenerateAccessJWT("1000", "alice", "user", "1000", "1000")
 	if err != nil {
 		t.Fatalf("failed to generate token: %v", err)
 	}
