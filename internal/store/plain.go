@@ -136,10 +136,12 @@ func (m *PlainHandler) Init(root domain.User) {
 }
 
 func (m *PlainHandler) Useradd(user domain.User) (int, int, error) {
-	plainWriteMu.Lock()
-	defer plainWriteMu.Unlock()
+	defer lockPlain(true)()
 
 	log.Printf("Adding user %q ...", user.Name)
+	if err := checkPlainValues(user.Name, user.Info, user.Home, user.Shell, user.Email); err != nil {
+		return -1, -1, err
+	}
 
 	// Open/Create files first to handle all file errors at once.
 	file, err := os.OpenFile(MINIOTH_PASSWD, os.O_CREATE|os.O_RDWR|os.O_APPEND, 0o600)
@@ -177,19 +179,31 @@ func (m *PlainHandler) Useradd(user domain.User) (int, int, error) {
 		return -1, -1, err
 	}
 
-	// passwd file
-	// get uuid
 	uuid := nextUid()
+	for _, f := range []*os.File{pfile, gfile, file} {
+		if err := terminateLastLine(f); err != nil {
+			return -1, -1, err
+		}
+	}
+	// shadow and group first, passwd (which makes the user exist) last: a
+	// failure in between leaves unused lines, never a user without a password
+	if _, err := fmt.Fprintf(pfile, ENTRY_MSHADOW_FORMAT, user.Name, hashPass, user.Password.LastPasswordChange, user.Password.MinPasswordAge, user.Password.MaxPasswordAge, user.Password.WarningPeriod, user.Password.InactivityPeriod, user.Password.ExpirationDate, len(user.Password.Hashpass)); err != nil {
+		return -1, -1, fmt.Errorf("write shadow: %w", err)
+	}
+	// every user gets their own primary group (gid == uid in this store)
+	if _, err := fmt.Fprintf(gfile, ENTRY_MGROUP_FORMAT, user.Name, PLACEHOLDER_PASS, uuid, user.Name); err != nil {
+		return -1, -1, fmt.Errorf("write group: %w", err)
+	}
 	// email_verified always starts false here, regardless of anything the
 	// caller set on user.EmailVerified — same reasoning as DBHandler.Useradd.
-	fmt.Fprintf(file, ENTRY_MPASSWD_FORMAT, user.Name, PLACEHOLDER_PASS, uuid, uuid, user.Info, user.Home, user.Shell, user.Email, false)
-
-	// shadow file
-	fmt.Fprintf(pfile, ENTRY_MSHADOW_FORMAT, user.Name, hashPass, user.Password.LastPasswordChange, user.Password.MinPasswordAge, user.Password.MaxPasswordAge, user.Password.WarningPeriod, user.Password.InactivityPeriod, user.Password.ExpirationDate, len(user.Password.Hashpass))
-
-	// every user gets their own primary group, same convention as
-	// DBHandler (gid == uid).
-	fmt.Fprintf(gfile, ENTRY_MGROUP_FORMAT, user.Name, PLACEHOLDER_PASS, uuid, user.Name)
+	if _, err := fmt.Fprintf(file, ENTRY_MPASSWD_FORMAT, user.Name, PLACEHOLDER_PASS, uuid, uuid, user.Info, user.Home, user.Shell, user.Email, false); err != nil {
+		return -1, -1, fmt.Errorf("write passwd: %w", err)
+	}
+	for _, f := range []*os.File{pfile, gfile, file} {
+		if err := f.Sync(); err != nil {
+			return -1, -1, err
+		}
+	}
 
 	iuud, err := strconv.Atoi(uuid)
 	if err != nil {
@@ -203,8 +217,7 @@ func (m *PlainHandler) Useradd(user domain.User) (int, int, error) {
 /* delete a user: their passwd/shadow entries, their own primary group, and
 * their membership in every other group. */
 func (m *PlainHandler) Userdel(uid string) error {
-	plainWriteMu.Lock()
-	defer plainWriteMu.Unlock()
+	defer lockPlain(true)()
 
 	log.Printf("Deleting user with uid %q ...", uid)
 	if uid == "" {
@@ -241,8 +254,10 @@ func (m *PlainHandler) Userdel(uid string) error {
 /* replace an existing user's info/home/shell. Identity (name, uid) doesn't
 * change through Usermod — that's what Userdel+Useradd is for. */
 func (m *PlainHandler) Usermod(user domain.User) error {
-	plainWriteMu.Lock()
-	defer plainWriteMu.Unlock()
+	defer lockPlain(true)()
+	if err := checkPlainValues(user.Info, user.Home, user.Shell); err != nil {
+		return err
+	}
 
 	f, err := os.Open(MINIOTH_PASSWD)
 	if err != nil {
@@ -275,11 +290,13 @@ func (m *PlainHandler) Usermod(user domain.User) error {
 /* partially patch a user identified by uid: info/home/shell (passwd file)
 * and/or password (shadow file). */
 func (m *PlainHandler) Userpatch(uid string, fields map[string]interface{}) error {
-	plainWriteMu.Lock()
-	defer plainWriteMu.Unlock()
+	defer lockPlain(true)()
 
 	if len(fields) == 0 {
 		return fmt.Errorf("no inputs")
+	}
+	if err := checkPlainFields(fields, "password"); err != nil {
+		return err
 	}
 
 	username, err := usernameForUID(uid)
@@ -307,10 +324,17 @@ func (m *PlainHandler) Userpatch(uid string, fields map[string]interface{}) erro
 }
 
 func (m *PlainHandler) Groupadd(group domain.Group) (int, error) {
-	plainWriteMu.Lock()
-	defer plainWriteMu.Unlock()
+	defer lockPlain(true)()
 
 	log.Printf("Adding group %q...", group.Name)
+	if err := checkPlainValues(group.Name); err != nil {
+		return -1, err
+	}
+	for _, u := range group.Users {
+		if err := checkPlainValues(u.Name); err != nil {
+			return -1, err
+		}
+	}
 
 	if groupExists(group.Name) {
 		return -1, fmt.Errorf("group already exists")
@@ -328,14 +352,18 @@ func (m *PlainHandler) Groupadd(group domain.Group) (int, error) {
 		members = append(members, u.Name)
 	}
 
-	fmt.Fprintf(gfile, ENTRY_MGROUP_FORMAT, group.Name, PLACEHOLDER_PASS, gid, strings.Join(members, ","))
+	if err := terminateLastLine(gfile); err != nil {
+		return -1, err
+	}
+	if _, err := fmt.Fprintf(gfile, ENTRY_MGROUP_FORMAT, group.Name, PLACEHOLDER_PASS, gid, strings.Join(members, ",")); err != nil {
+		return -1, fmt.Errorf("write group: %w", err)
+	}
 
-	return gid, nil
+	return gid, gfile.Sync()
 }
 
 func (m *PlainHandler) Groupdel(gid string) error {
-	plainWriteMu.Lock()
-	defer plainWriteMu.Unlock()
+	defer lockPlain(true)()
 
 	f, err := os.Open(MINIOTH_GROUP)
 	if err != nil {
@@ -363,8 +391,10 @@ func (m *PlainHandler) Groupdel(gid string) error {
 }
 
 func (m *PlainHandler) Grouppatch(gid string, fields map[string]interface{}) error {
-	plainWriteMu.Lock()
-	defer plainWriteMu.Unlock()
+	defer lockPlain(true)()
+	if err := checkPlainFields(fields); err != nil {
+		return err
+	}
 
 	f, err := os.Open(MINIOTH_GROUP)
 	if err != nil {
@@ -408,8 +438,10 @@ func (m *PlainHandler) Grouppatch(gid string, fields map[string]interface{}) err
 }
 
 func (m *PlainHandler) Groupmod(group domain.Group) error {
-	plainWriteMu.Lock()
-	defer plainWriteMu.Unlock()
+	defer lockPlain(true)()
+	if err := checkPlainValues(group.Name); err != nil {
+		return err
+	}
 
 	f, err := os.Open(MINIOTH_GROUP)
 	if err != nil {
@@ -444,8 +476,7 @@ func (m *PlainHandler) Groupmod(group domain.Group) error {
 }
 
 func (m *PlainHandler) Passwd(username, password string) error {
-	plainWriteMu.Lock()
-	defer plainWriteMu.Unlock()
+	defer lockPlain(true)()
 
 	hashPass, err := domain.Hash([]byte(password))
 	if err != nil {
@@ -457,8 +488,7 @@ func (m *PlainHandler) Passwd(username, password string) error {
 // VerifyEmail marks uid's email as verified. Reached only via a signed
 // email-verification token (internal/auth), not gated behind admin auth.
 func (m *PlainHandler) VerifyEmail(uid string) error {
-	plainWriteMu.Lock()
-	defer plainWriteMu.Unlock()
+	defer lockPlain(true)()
 
 	username, err := usernameForUID(uid)
 	if err != nil {
@@ -473,8 +503,7 @@ func (m *PlainHandler) VerifyEmail(uid string) error {
 // adding a single member, so promoting a user (e.g. to the admin group,
 // gid 0) needs its own operation, same as DBHandler.AssignGroup.
 func (m *PlainHandler) AssignGroup(uid string, gid int) error {
-	plainWriteMu.Lock()
-	defer plainWriteMu.Unlock()
+	defer lockPlain(true)()
 
 	username, err := usernameForUID(uid)
 	if err != nil {
@@ -542,8 +571,7 @@ func (m *PlainHandler) RevokeTokens(uid string) error {
 }
 
 func (m *PlainHandler) Select(id string) []interface{} {
-	plainWriteMu.RLock()
-	defer plainWriteMu.RUnlock()
+	defer lockPlain(false)()
 
 	base, param, value := util.SplitSelectID(id)
 
@@ -649,8 +677,7 @@ func (m *PlainHandler) selectGroups(param, value string) []interface{} {
 
 /* approval of minioth means, user exists and password is valid */
 func (m *PlainHandler) Authenticate(username, password string) (*domain.User, error) {
-	plainWriteMu.RLock()
-	defer plainWriteMu.RUnlock()
+	defer lockPlain(false)()
 
 	log.Printf("authenticating user... %q", username)
 
@@ -773,13 +800,18 @@ func seedStandardGroups() error {
 		{"mod", 100},
 		{"user", 1000},
 	}
+	if err := terminateLastLine(gfile); err != nil {
+		return err
+	}
 	for _, g := range standard {
 		if groupExists(g.name) {
 			continue
 		}
-		fmt.Fprintf(gfile, ENTRY_MGROUP_FORMAT, g.name, PLACEHOLDER_PASS, g.gid, "")
+		if _, err := fmt.Fprintf(gfile, ENTRY_MGROUP_FORMAT, g.name, PLACEHOLDER_PASS, g.gid, ""); err != nil {
+			return err
+		}
 	}
-	return nil
+	return gfile.Sync()
 }
 
 func groupExists(name string) bool {
@@ -862,22 +894,6 @@ func removeLineByKey(path, key string) error {
 	f.Close()
 
 	return rewriteFile(path, kept)
-}
-
-func rewriteFile(path string, lines []string) error {
-	f, err := os.Create(path)
-	if err != nil {
-		return err
-	}
-	defer f.Close()
-
-	w := bufio.NewWriter(f)
-	for _, l := range lines {
-		if _, err := w.WriteString(l + "\n"); err != nil {
-			return fmt.Errorf("failed to write to file: %w", err)
-		}
-	}
-	return w.Flush()
 }
 
 // removeUserFromGroups drops username's own primary group (groupname ==
