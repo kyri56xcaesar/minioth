@@ -207,3 +207,48 @@ func withTempWD(t *testing.T) {
 		os.Chdir(orig)
 	})
 }
+
+// A user's primary group is their own group: once a gid is taken by
+// another group the two ids differ, and pgroup used to record the uid.
+func TestDBHandlerPrimaryGroupIsTheUsersGroup(t *testing.T) {
+	withTempWD(t)
+	h := &DBHandler{DBpath: "test.db"}
+	h.Init(testRoot())
+	defer h.Close()
+
+	if _, _, err := h.Useradd(domain.User{Name: "dave", Password: domain.Password{Hashpass: "hunter22"}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.Groupadd(domain.Group{Name: "extra"}); err != nil { // shifts the next gid
+		t.Fatal(err)
+	}
+	uid, pgroup, err := h.Useradd(domain.User{Name: "erin", Password: domain.Password{Hashpass: "hunter22"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var ownGID, stored int
+	if err := h.db.QueryRow(`SELECT gid FROM groups WHERE groupname = 'erin'`).Scan(&ownGID); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.db.QueryRow(`SELECT pgroup FROM users WHERE uid = ?`, uid).Scan(&stored); err != nil {
+		t.Fatal(err)
+	}
+	if ownGID == uid {
+		t.Fatalf("the scenario needs the user's gid to differ from the uid (both %d)", uid)
+	}
+	if pgroup != ownGID || stored != ownGID {
+		t.Errorf("uid %d: returned pgroup %d, stored %d, own group %d", uid, pgroup, stored, ownGID)
+	}
+
+	// users stored the old way are repaired at start
+	if _, err := h.db.Exec(`UPDATE users SET pgroup = uid WHERE uid = ?`, uid); err != nil {
+		t.Fatal(err)
+	}
+	h.Close()
+	h2 := &DBHandler{DBpath: "test.db"}
+	h2.Init(testRoot())
+	defer h2.Close()
+	if err := h2.db.QueryRow(`SELECT pgroup FROM users WHERE uid = ?`, uid).Scan(&stored); err != nil || stored != ownGID {
+		t.Errorf("after restart pgroup = %d (%v), want %d", stored, err, ownGID)
+	}
+}

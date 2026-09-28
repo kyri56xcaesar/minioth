@@ -198,6 +198,20 @@ func (m *DBHandler) Init(root domain.User) {
 		log.Fatal("Failed to create tables:", err)
 	}
 
+	// users created before the fix above have pgroup = uid while their own
+	// group has another gid; point them at their group
+	if res, err := db.Exec(`
+		UPDATE users SET pgroup = (
+			SELECT g.gid FROM groups g JOIN user_groups ug ON ug.gid = g.gid
+			WHERE g.groupname = users.username AND ug.uid = users.uid)
+		WHERE uid != 0 AND EXISTS (
+			SELECT 1 FROM groups g JOIN user_groups ug ON ug.gid = g.gid
+			WHERE g.groupname = users.username AND ug.uid = users.uid AND g.gid != users.pgroup)`); err != nil {
+		log.Printf("failed to repair primary groups: %v", err)
+	} else if n, _ := res.RowsAffected(); n > 0 {
+		log.Printf("repaired the primary group of %d user(s)", n)
+	}
+
 	// Check for main group existence
 	log.Print("Checking for main groups...")
 	var mainGroupsExist bool
@@ -331,6 +345,12 @@ func (m *DBHandler) Useradd(user domain.User) (int, int, error) {
 		log.Printf("failed to insert user unique/primary group: %v", err)
 		tx.Rollback()
 		return -1, -1, err
+	}
+	// the group gets its own gid (it differs from the uid once a gid is
+	// taken); record that as the primary group, not the uid guessed above
+	if _, err = tx.Exec(`UPDATE users SET pgroup = ? WHERE uid = ?`, gid, user.Uid); err != nil {
+		tx.Rollback()
+		return -1, -1, fmt.Errorf("record primary group: %w", err)
 	}
 
 	usergroupQuery := `
