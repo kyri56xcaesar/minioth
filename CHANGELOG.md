@@ -5,6 +5,12 @@ All notable changes to minioth. Versions follow
 under `internal/`, so there's no importable Go API to version. The
 rationale behind each fix lives in [BACKLOG.md](BACKLOG.md).
 
+## [v1.1.1] — 2026-09-28
+
+### Changed
+- Retracted v1.0.5 and v1.0.6 in `go.mod` (unauthenticated `/passwd`),
+  alongside the already-retracted v1.0.0–v1.0.4. No code changes.
+
 ## [v1.1.0] — 2026-09-28
 
 ### Breaking
@@ -95,6 +101,7 @@ Tagged at some point and later deleted from the repository. The Go
 module proxy still lists them but can't serve them, so they're retracted
 in `go.mod`.
 
+[v1.1.1]: https://github.com/kyri56xcaesar/minioth/compare/v1.1.0...v1.1.1
 [v1.1.0]: https://github.com/kyri56xcaesar/minioth/compare/v1.0.6...v1.1.0
 [v1.0.6]: https://github.com/kyri56xcaesar/minioth/compare/v1.0.5...v1.0.6
 [v1.0.5]: https://github.com/kyri56xcaesar/minioth/releases/tag/v1.0.5

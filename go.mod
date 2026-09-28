@@ -2,9 +2,13 @@ module github.com/kyri56xcaesar/minioth
 
 go 1.26.0
 
-// v1.0.0–v1.0.4 were tagged and later deleted from the repo; the module
-// proxy still lists them but can't resolve them.
-retract [v1.0.0, v1.0.4]
+retract (
+	// v1.0.0–v1.0.4 were tagged and later deleted from the repo; the module
+	// proxy still lists them but can't resolve them.
+	[v1.0.0, v1.0.4]
+	// v1.0.5–v1.0.6 allow unauthenticated password changes via /passwd.
+	[v1.0.5, v1.0.6]
+)
 
 require (
 	github.com/gin-gonic/gin v1.10.0
