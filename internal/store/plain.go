@@ -21,6 +21,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -51,6 +52,9 @@ var (
 	MINIOTH_PASSWD = filepath.Join("data", "plain", "mpasswd")
 	MINIOTH_GROUP  = filepath.Join("data", "plain", "mgroup")
 	MINIOTH_SHADOW = filepath.Join("data", "plain", "mshadow")
+	// uid:version lines, one per user whose tokens were ever revoked —
+	// see TokenVersion/RevokeTokens. Created lazily on first revocation.
+	MINIOTH_TOKENS = filepath.Join("data", "plain", "mtokens")
 )
 
 // SetPlainDataDir relocates where PlainHandler reads and writes its three
@@ -62,6 +66,7 @@ func SetPlainDataDir(dir string) {
 	MINIOTH_PASSWD = filepath.Join(dir, "mpasswd")
 	MINIOTH_GROUP = filepath.Join(dir, "mgroup")
 	MINIOTH_SHADOW = filepath.Join(dir, "mshadow")
+	MINIOTH_TOKENS = filepath.Join(dir, "mtokens")
 }
 
 type PlainHandler struct{}
@@ -222,6 +227,10 @@ func (m *PlainHandler) Userdel(uid string) error {
 	}
 	if err := removeUserFromGroups(username); err != nil {
 		return fmt.Errorf("failed to update group memberships: %w", err)
+	}
+	// Same reason as DBHandler.Userdel: nextUid can hand this uid out again.
+	if err := bumpTokenVersion(uid); err != nil {
+		return fmt.Errorf("failed to revoke deleted user's tokens: %w", err)
 	}
 
 	log.Print("Deletion successful.")
@@ -514,6 +523,24 @@ func (m *PlainHandler) AssignGroup(uid string, gid int) error {
 }
 
 /* this method is supposed to return eveyrhing from the given file */
+func (m *PlainHandler) TokenVersion(uid string) (int, error) {
+	plainWriteMu.RLock()
+	defer plainWriteMu.RUnlock()
+
+	versions, err := readTokenVersions()
+	if err != nil {
+		return 0, err
+	}
+	return versions[uid], nil
+}
+
+func (m *PlainHandler) RevokeTokens(uid string) error {
+	plainWriteMu.Lock()
+	defer plainWriteMu.Unlock()
+
+	return bumpTokenVersion(uid)
+}
+
 func (m *PlainHandler) Select(id string) []interface{} {
 	plainWriteMu.RLock()
 	defer plainWriteMu.RUnlock()
@@ -942,6 +969,54 @@ func patchPasswdFields(username string, fields map[string]interface{}) error {
 		return fmt.Errorf("user not found")
 	}
 	return rewriteFile(MINIOTH_PASSWD, kept)
+}
+
+func readTokenVersions() (map[string]int, error) {
+	f, err := os.Open(MINIOTH_TOKENS)
+	if os.IsNotExist(err) {
+		return map[string]int{}, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+
+	out := map[string]int{}
+	scanner := bufio.NewScanner(f)
+	for scanner.Scan() {
+		parts := strings.SplitN(scanner.Text(), DEL, 2)
+		if len(parts) != 2 {
+			continue
+		}
+		v, err := strconv.Atoi(parts[1])
+		if err != nil {
+			continue
+		}
+		out[parts[0]] = v
+	}
+	return out, scanner.Err()
+}
+
+// bumpTokenVersion increments uid's token generation. Callers must hold
+// plainWriteMu's write lock.
+func bumpTokenVersion(uid string) error {
+	versions, err := readTokenVersions()
+	if err != nil {
+		return err
+	}
+	versions[uid]++
+
+	uids := make([]string, 0, len(versions))
+	for u := range versions {
+		uids = append(uids, u)
+	}
+	sort.Strings(uids)
+
+	lines := make([]string, 0, len(uids))
+	for _, u := range uids {
+		lines = append(lines, u+DEL+strconv.Itoa(versions[u]))
+	}
+	return rewriteFile(MINIOTH_TOKENS, lines)
 }
 
 func patchShadowPassword(username, hashPass string) error {

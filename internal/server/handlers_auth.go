@@ -99,7 +99,14 @@ func (h *AuthHandler) Login(c *gin.Context) {
 		return
 	}
 
-	token, strGroups, strGids, pgroup, err := issueAccessToken(*user)
+	version, err := h.Minioth.TokenVersion(strconv.Itoa(user.Uid))
+	if err != nil {
+		log.Printf("failed to look up token version: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to issue token"})
+		return
+	}
+
+	token, strGroups, strGids, pgroup, err := issueAccessToken(*user, version)
 	if err != nil {
 		// A signing failure is this request's problem, not the whole
 		// process's — it must not take the server down.
@@ -108,7 +115,7 @@ func (h *AuthHandler) Login(c *gin.Context) {
 		return
 	}
 
-	refreshToken, err := auth.GenerateRefreshJWT(strconv.Itoa(user.Uid))
+	refreshToken, err := auth.GenerateRefreshJWT(strconv.Itoa(user.Uid), version)
 	if err != nil {
 		log.Printf("failed to generate refresh token: %v", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to issue token"})
@@ -161,7 +168,9 @@ func (h *AuthHandler) RefreshToken(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "error generating access_token"})
 		return
 	}
-	newAccessToken, _, _, _, err := issueAccessToken(user)
+	// ParseRefreshToken already confirmed claims.Ver is still the user's
+	// current token generation.
+	newAccessToken, _, _, _, err := issueAccessToken(user, claims.Ver)
 	if err != nil {
 		log.Printf("error generating new access token: %v", err)
 		c.JSON(http.StatusInternalServerError, gin.H{
@@ -170,7 +179,7 @@ func (h *AuthHandler) RefreshToken(c *gin.Context) {
 		return
 	}
 
-	newRefreshToken, err := auth.GenerateRefreshJWT(claims.UserID)
+	newRefreshToken, err := auth.GenerateRefreshJWT(claims.UserID, claims.Ver)
 	if err != nil {
 		log.Printf("error generating new refresh token: %v", err)
 		c.JSON(http.StatusInternalServerError, gin.H{
@@ -246,40 +255,159 @@ func (h *AuthHandler) Me(c *gin.Context) {
 	}
 }
 
-/* This endpoint should change a user password. It must "authenticate" the user. User can only change his password. */
+// ChangePassword changes the caller's own password. Two credentials are
+// required: a bearer access token (which user) and current_password
+// (proof it's really them, so a leaked access token alone can't take over
+// the account). This endpoint used to accept a bare {username, password}
+// with no authentication at all — anyone could set anyone's password.
+// Success revokes every token the user holds, the caller's included.
 func (h *AuthHandler) ChangePassword(c *gin.Context) {
-	var lclaim LoginClaim
-	err := c.BindJSON(&lclaim)
-	if err != nil {
-		log.Printf("error binding request body to struct: %v", err)
-		c.JSON(http.StatusBadRequest, gin.H{"error": "binding error"})
+	claims, ok := h.accessClaims(c)
+	if !ok {
 		return
 	}
 
-	pass := domain.Password{
-		Hashpass: lclaim.Password,
+	var body struct {
+		CurrentPassword string `json:"current_password" binding:"required"`
+		NewPassword     string `json:"new_password" binding:"required"`
 	}
-	// Verify user credentials
-	if lclaim.Password == "" {
-		c.JSON(400, gin.H{
-			"error": "no password provided",
-		})
-		return
-	} else if err := pass.ValidatePassword(); err != nil {
-		c.JSON(400, gin.H{
-			"error": err.Error(),
-		})
+	if err := c.ShouldBindJSON(&body); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "current_password and new_password are required"})
 		return
 	}
 
-	err = h.Minioth.Passwd(lclaim.Username, lclaim.Password)
-	if err != nil {
+	if err := (&domain.Password{Hashpass: body.NewPassword}).ValidatePassword(); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	user, ok := selectOneUser(h.Minioth, "users?uid="+claims.UserID)
+	if !ok {
+		c.JSON(http.StatusNotFound, gin.H{"error": "user not found"})
+		return
+	}
+
+	if _, err := h.Minioth.Authenticate(user.Name, body.CurrentPassword); err != nil {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "current password is incorrect"})
+		return
+	}
+
+	if err := h.Minioth.Passwd(user.Name, body.NewPassword); err != nil {
 		log.Printf("failed to change password: %v", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to change password"})
 		return
 	}
 
-	c.JSON(200, gin.H{"status": "password changed successfully"})
+	if err := h.Minioth.RevokeTokens(claims.UserID); err != nil {
+		log.Printf("password changed but failed to revoke tokens for uid %s: %v", claims.UserID, err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "password changed, but failed to revoke existing tokens"})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"status": "password changed successfully; all existing tokens revoked, log in again"})
+}
+
+// Logout revokes every token the caller holds (access, refresh, pending
+// password reset) — on every device, since revocation is per user, not
+// per token. See auth.SetTokenVersionSource.
+func (h *AuthHandler) Logout(c *gin.Context) {
+	claims, ok := h.accessClaims(c)
+	if !ok {
+		return
+	}
+
+	if err := h.Minioth.RevokeTokens(claims.UserID); err != nil {
+		log.Printf("failed to revoke tokens for uid %s: %v", claims.UserID, err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to log out"})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"status": "logged out; all tokens revoked"})
+}
+
+// UpdateMe lets a user edit their own profile — email, info and shell.
+// Home, groups, uid etc. stay admin-only (PATCH /admin/userpatch).
+// Omitted or empty fields are left unchanged. Changing the email resets
+// email_verified, since the new address hasn't been proven yet.
+func (h *AuthHandler) UpdateMe(c *gin.Context) {
+	claims, ok := h.accessClaims(c)
+	if !ok {
+		return
+	}
+
+	var body struct {
+		Email *string `json:"email"`
+		Info  *string `json:"info"`
+		Shell *string `json:"shell"`
+	}
+	if err := c.ShouldBindJSON(&body); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request body"})
+		return
+	}
+
+	user, ok := selectOneUser(h.Minioth, "users?uid="+claims.UserID)
+	if !ok {
+		c.JSON(http.StatusNotFound, gin.H{"error": "user not found"})
+		return
+	}
+
+	fields := map[string]interface{}{}
+	for name, v := range map[string]*string{"email": body.Email, "info": body.Info, "shell": body.Shell} {
+		if v == nil || *v == "" {
+			continue
+		}
+		// ':' and newlines would corrupt the plain backend's
+		// colon-delimited, one-entry-per-line files.
+		if strings.ContainsAny(*v, ":\r\n") {
+			c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("%s must not contain ':' or newlines", name)})
+			return
+		}
+		fields[name] = *v
+	}
+	if body.Info != nil && len(*body.Info) > 100 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "info field is too long: maximum allowed length is 100 characters"})
+		return
+	}
+	if body.Email != nil && *body.Email != "" && !strings.Contains(*body.Email, "@") {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid email address"})
+		return
+	}
+	if len(fields) == 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "nothing to update: provide email, info and/or shell"})
+		return
+	}
+	if email, ok := fields["email"]; ok && email != user.Email {
+		fields["email_verified"] = false
+	}
+
+	if err := h.Minioth.Userpatch(claims.UserID, fields); err != nil {
+		log.Printf("failed to update profile for uid %s: %v", claims.UserID, err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to update profile"})
+		return
+	}
+
+	updated, ok := selectOneUser(h.Minioth, "users?uid="+claims.UserID)
+	if !ok {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to read back updated profile"})
+		return
+	}
+	c.JSON(http.StatusOK, updated)
+}
+
+// accessClaims extracts and verifies the caller's bearer access token,
+// writing the error response itself and returning ok=false on failure.
+func (h *AuthHandler) accessClaims(c *gin.Context) (*auth.CustomClaims, bool) {
+	tokenString, ok := auth.ExtractBearerToken(c)
+	if !ok {
+		return nil, false
+	}
+	claims, err := auth.ParseAccessToken(tokenString)
+	if err != nil {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "bad token"})
+		c.Abort()
+		return nil, false
+	}
+	return claims, true
 }
 
 // selectOneUser runs a Select("users?...") query expected to match
@@ -396,7 +524,14 @@ func (h *AuthHandler) RequestPasswordReset(c *gin.Context) {
 		return
 	}
 
-	resetToken, err := auth.GeneratePasswordResetToken(strconv.Itoa(user.Uid))
+	version, err := h.Minioth.TokenVersion(strconv.Itoa(user.Uid))
+	if err != nil {
+		log.Printf("failed to look up token version: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to issue reset token"})
+		return
+	}
+
+	resetToken, err := auth.GeneratePasswordResetToken(strconv.Itoa(user.Uid), version)
 	if err != nil {
 		log.Printf("failed to generate password reset token: %v", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to issue reset token"})
@@ -447,13 +582,22 @@ func (h *AuthHandler) ResetPassword(c *gin.Context) {
 		return
 	}
 
-	c.JSON(http.StatusOK, gin.H{"status": "password reset successfully"})
+	// Also what makes the reset token single-use: it carries the old
+	// generation, so it's rejected from here on.
+	if err := h.Minioth.RevokeTokens(claims.UserID); err != nil {
+		log.Printf("password reset but failed to revoke tokens for uid %s: %v", claims.UserID, err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "password reset, but failed to revoke existing tokens"})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"status": "password reset successfully; all existing tokens revoked"})
 }
 
 // issueAccessToken signs an access token for user, returning it with the
-// groups, group ids and primary group it encodes. The primary group is the
+// groups, group ids and primary group it encodes. version is the user's
+// current token generation (see auth.SetTokenVersionSource). The primary group is the
 // group named after the user (falling back to the stored pgroup).
-func issueAccessToken(user domain.User) (string, string, string, int, error) {
+func issueAccessToken(user domain.User, version int) (string, string, string, int, error) {
 	strGroups := domain.GroupsToString(user.Groups)
 	strGids := domain.GidsToString(user.Groups)
 	pgroup := user.Pgroup
@@ -462,7 +606,7 @@ func issueAccessToken(user domain.User) (string, string, string, int, error) {
 			pgroup = group.Gid
 		}
 	}
-	token, err := auth.GenerateAccessJWT(strconv.Itoa(user.Uid), user.Name, strGroups, strGids, strconv.Itoa(pgroup))
+	token, err := auth.GenerateAccessJWT(strconv.Itoa(user.Uid), user.Name, strGroups, strGids, strconv.Itoa(pgroup), version)
 
 	return token, strGroups, strGids, pgroup, err
 }

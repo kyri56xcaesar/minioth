@@ -1,6 +1,7 @@
 package domain
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
@@ -74,6 +75,17 @@ type MiniothHandler interface {
 	// the admin group, gid 0) needs its own operation.
 	AssignGroup(uid string, gid int) error
 
+	// TokenVersion returns uid's current token generation (0 if tokens
+	// were never revoked). Every token minioth issues carries the
+	// generation current at issue time, and is only accepted while that
+	// still matches — see internal/auth's SetTokenVersionSource.
+	TokenVersion(uid string) (int, error)
+	// RevokeTokens bumps uid's token generation, invalidating every
+	// access, refresh and password-reset token issued to them so far.
+	// Backends also call it from Userdel, so a later user who happens to
+	// be assigned the same uid can't inherit the deleted user's tokens.
+	RevokeTokens(uid string) error
+
 	Select(id string) []interface{}
 
 	Authenticate(username, password string) (*User, error)
@@ -146,6 +158,14 @@ func (m *Minioth) VerifyEmail(uid string) error {
 
 func (m *Minioth) AssignGroup(uid string, gid int) error {
 	return m.handler.AssignGroup(uid, gid)
+}
+
+func (m *Minioth) TokenVersion(uid string) (int, error) {
+	return m.handler.TokenVersion(uid)
+}
+
+func (m *Minioth) RevokeTokens(uid string) error {
+	return m.handler.RevokeTokens(uid)
 }
 
 func (m *Minioth) Select(id string) []interface{} {
@@ -239,6 +259,30 @@ type Password struct {
 	WarningPeriod      string `json:"warningPeriod"`
 	InactivityPeriod   string `json:"inactivityPeriod"`
 	ExpirationDate     string `json:"expirationDate"`
+}
+
+// MarshalJSON leaves Hashpass out of every JSON response. Password is
+// embedded in User, which handlers return as-is (/v1/user/me,
+// /v1/admin/users, ...), so without this the bcrypt hash went out in the
+// response body. Unmarshaling is untouched: register/useradd still read
+// the plaintext password from "hashpass" on the way in.
+func (p Password) MarshalJSON() ([]byte, error) {
+	type public struct {
+		LastPasswordChange string `json:"lastPasswordChange"`
+		MinPasswordAge     string `json:"minimumPasswordAge"`
+		MaxPasswordAge     string `json:"maximumPasswordAge"`
+		WarningPeriod      string `json:"warningPeriod"`
+		InactivityPeriod   string `json:"inactivityPeriod"`
+		ExpirationDate     string `json:"expirationDate"`
+	}
+	return json.Marshal(public{
+		LastPasswordChange: p.LastPasswordChange,
+		MinPasswordAge:     p.MinPasswordAge,
+		MaxPasswordAge:     p.MaxPasswordAge,
+		WarningPeriod:      p.WarningPeriod,
+		InactivityPeriod:   p.InactivityPeriod,
+		ExpirationDate:     p.ExpirationDate,
+	})
 }
 
 func (p *Password) PtrFields() []any {

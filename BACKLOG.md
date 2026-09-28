@@ -212,10 +212,10 @@ still open.
   `PurposeClaims` — reuses `jwtRefreshKey`, the same internal-only signing
   key refresh tokens use, with a `Purpose` claim so a verification token
   can't be replayed as a reset token or vice versa) is logged and returned
-  directly in the API response instead of being mailed. No new persistent
-  storage: the token's own signature and expiry are the validity check,
-  the same tradeoff refresh tokens already make — see the no-revocation
-  caveat above, which applies here too.
+  directly in the API response instead of being mailed. No per-token
+  storage: signature and expiry are the validity check — plus, since
+  token revocation landed (see Future work), the user's token generation
+  for reset tokens, which is what makes them single-use.
 - **[fixed] No way to create another admin.** Registration and
   `/admin/useradd` had no path to grant the `admin` group, and
   `Grouppatch`'s `users` field replaces a group's *entire* member list
@@ -272,8 +272,9 @@ still open.
   *format* specifically — actual bytes read back off disk after each
   operation, not just the Go API's return values, since a wrong field
   offset can still happen to read back something plausible-looking;
-  `internal/server`'s HTTP-layer suite, see above) — concurrent-write load
-  testing is the main thing still open.
+  `internal/server`'s HTTP-layer suite, see above;
+  `internal/store/concurrency_test.go`: concurrent-write load, see
+  Future work).
 
 ## Design / maintainability
 
@@ -315,3 +316,133 @@ still open.
   doc); the dead, `// Unused`-tagged `checkIfUserExists` in
   `plainHandlers.go` was deleted — `exists()` was already the one actually
   in use and does the same check.
+
+## Future work (not started)
+
+Two kinds here: things worth doing regardless of what minioth is for, and
+bigger calls that only make sense if its purpose changes from "lightweight
+identity simulation" (see `README.md`) to something needing real
+production guarantees.
+
+### Worth doing regardless
+
+All six done on 2026-09-28 (see `CHANGELOG.md`, v1.1.0).
+
+- **[fixed] Password hash exposed via JSON.** `GET /v1/user/me`,
+  `GET /v1/admin/users` and `GET /v1/admin/groups` all returned the bcrypt
+  hash. `domain.Password` now has a `MarshalJSON` that omits `Hashpass`
+  (the aging fields stay). Unmarshaling is untouched, so register/useradd
+  still read the plaintext password from `"hashpass"` on the way in.
+  `TestPasswordHashNotInResponses` checks every user-returning route, and
+  was confirmed to fail with the fix disabled.
+- **[fixed] Self-service profile editing.** `PATCH /v1/user/me` (bearer)
+  updates the caller's own `email`, `info`, `shell`. Changing the email
+  resets `email_verified`. Values containing `:` or newlines are rejected,
+  since they would corrupt the plain backend's colon-delimited files.
+  `home`, groups, uid and so on stay admin-only.
+- **[fixed] Refresh-token / access-token revocation.** This is a per-user
+  *token generation* counter (`token_versions` table in SQLite, `mtokens`
+  file in the plain backend), not a timestamp cutoff: `iat` has
+  one-second precision, so a cutoff can't separate a token issued just
+  before a logout from one issued just after it in the same second.
+  Access, refresh and password-reset tokens carry a `ver` claim, and
+  `auth.ParseAccessToken`/`ParseRefreshToken`/`ParsePasswordResetToken`
+  reject any token whose `ver` no longer matches (looked up via
+  `auth.SetTokenVersionSource`, which `NewMService` wires to the store).
+  Things that bump it: `POST /v1/logout`, `POST /v1/admin/revoke`,
+  password change, password reset (which is what makes a reset token
+  single-use), and `Userdel`. `Userdel` bumps it because uids are reused
+  (MAX+1), so otherwise the next user given that uid would accept the
+  deleted user's unexpired tokens. A separate table rather than a `users`
+  column means `CREATE TABLE IF NOT EXISTS` retrofits it onto existing
+  `minioth.db` files with no ALTER; verified live against a db created by
+  v1.0.6. Tokens issued before the upgrade have no `ver` (0) and stay
+  valid until they expire. Tradeoffs: one store read per authenticated
+  request, and revocation is all-or-nothing per user (no per-session
+  logout). Email-verification tokens are deliberately not
+  generation-checked: they're already bound to the on-file email, and a
+  logout shouldn't void a pending verification link.
+- **[fixed] Concurrent-write load testing.** This entry used to say the
+  locks were "unit-tested for the locking logic's correctness". They
+  weren't: no concurrency test existed. `TestConcurrentWrites` (both
+  backends, run under `-race`) now runs 40 concurrent writers
+  (Useradd + Userpatch + RevokeTokens) against 40 readers (Select +
+  Authenticate), then checks for duplicate uids, lost updates, and that
+  every user can still log in. It found a real bug straight away:
+  **SQLite writes failed with `database is locked (SQLITE_BUSY)`**
+  whenever different write paths overlapped, because `dbWriteMu` only
+  covers id allocation. Reproduced over HTTP against the v1.0.6 binary: a
+  password change concurrent with registrations got a 500. Fixed with
+  DSN pragmas on every pooled connection (`sqliteDSNParams` in
+  `db.go`): `busy_timeout(5000)`, `journal_mode(WAL)` and
+  `_txlock=immediate`. The last one matters because `busy_timeout` alone
+  can't rescue a deferred transaction that upgrades from read to write;
+  SQLite fails that immediately to avoid a deadlock. The test is stable
+  over repeated `-race` runs.
+  Side fix: the store package's tests now run at bcrypt cost 4 via
+  `TestMain` (previously the default 16). The suite went from ~92s to a
+  few seconds, and it no longer hits `go test`'s 10-minute timeout under
+  `-race`.
+- **[fixed] An actual version tag.** Already done by the time this was
+  picked up: `v1.0.5` and `v1.0.6` are annotated, pushed, and both build and
+  pass the full test suite, and the stray `list` tag is gone. The remaining
+  mess was on the Go module proxy: it still lists `v1.0.0`–`v1.0.4` from
+  tags that were later deleted on GitHub, and every one of them fails with
+  `unknown revision`. Those can't be removed from the proxy, so `go.mod`
+  now `retract`s them. The retraction takes effect once a newer version
+  (v1.1.0) is published. `v1.0.5`/`v1.0.6` were deliberately left alone:
+  they're cached in the proxy and the checksum DB, so moving or deleting
+  them would break checksum verification for anyone who has already
+  fetched them.
+- **[fixed] CHANGELOG.md.** Created, organized by release (v1.0.5, v1.0.6,
+  v1.1.0).
+
+### Found while doing the above
+
+- **[fixed] `POST /v1/passwd` was completely unauthenticated.** It took
+  `{username, password}` and set that user's password, so anyone could
+  take over any account, root included. The README described it as an
+  "authenticated change", and the test for it
+  (`TestChangePassword`) exercised the unauthenticated call as the happy
+  path. It now requires a bearer access token plus
+  `{current_password, new_password}`, only ever changes the token's own
+  user (any `username` in the body is ignored), and revokes all of that
+  user's tokens on success. **Breaking HTTP API change.**
+- **[fixed] `DBHandler.Userpatch` stored patched passwords unhashed.**
+  `PATCH /admin/userpatch` with a `password` field wrote the plaintext
+  straight into `passwords.hashpass` on the SQLite backend, so the password
+  sat at rest in plaintext *and* the user could no longer log in
+  (`VerifyPass` expects bcrypt). The plain backend already hashed. Both
+  now do.
+- **[fixed] `DBHandler.Userpatch` interpolated JSON keys as SQL column
+  names.** Any key reached `UPDATE users SET <key> = ?`, so this was SQL
+  injection through key names (admin-only, but still). It now uses a
+  whitelist (`userPatchColumns`: info, home, shell, email,
+  email_verified), matching what the plain backend's `patchPasswdFields`
+  accepts. Unknown keys are logged and skipped.
+
+### Bigger scope calls (only if minioth's purpose changes)
+
+- **Schema migrations.** Discussed directly, no decision made.
+  `CREATE TABLE IF NOT EXISTS` won't retrofit new columns onto an existing
+  `minioth.db` (this session's own `email`/`email_verified` columns are a
+  live example), and `PlainHandler`'s flat-file format has the identical
+  problem in a cruder form. Two options from that discussion: (a) just
+  document "wipe and reseed" as the supported story, maybe with a
+  `-reset` CLI flag; (b) a small embedded `schema_migrations` table plus
+  an ordered slice of Go-run SQL statements, no external framework
+  (golang-migrate/goose et al. were considered too heavy for this).
+- **Structured/leveled logging and request correlation IDs.** Today
+  it's bare `log.Printf` everywhere, no severity levels, nothing to
+  correlate a request across log lines.
+- **Metrics/observability endpoint**, and a real readiness check
+  distinct from `/v1/.well-known/minioth`'s static "alive" liveness stub.
+- **Backup/replication story for the SQLite file.** Single file, single
+  process, no HA.
+- **Distributed rate limiting.** `internal/auth`'s `RateLimitMiddleware`
+  is explicitly in-memory and per-process (see its doc comment) —
+  irrelevant unless minioth ever runs as multiple instances behind a load
+  balancer.
+- **Real SMTP email delivery.** Email verification and password reset
+  are currently simulated (logged/returned, not mailed) by design —
+  revisit only if "simulate identity" stops being the goal.

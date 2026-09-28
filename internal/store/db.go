@@ -53,6 +53,14 @@ const (
     uid INTEGER NOT NULL,
     gid INTEGER NOT NULL
   );
+  -- Its own table rather than a users column: CREATE TABLE IF NOT EXISTS
+  -- retrofits it onto an existing minioth.db, where a new users column
+  -- would need an ALTER TABLE. Rows deliberately outlive their user (see
+  -- Userdel).
+  CREATE TABLE IF NOT EXISTS token_versions (
+    uid INTEGER PRIMARY KEY,
+    version INTEGER NOT NULL DEFAULT 0
+  );
   `
 )
 
@@ -72,13 +80,26 @@ type DBHandler struct {
 // future caller ever bypasses this handler and writes concurrently anyway.
 var dbWriteMu sync.Mutex
 
+// sqliteDSNParams apply to every pooled connection (database/sql opens
+// several, so a one-off PRAGMA after Open wouldn't stick). Without them,
+// concurrent writes failed outright with SQLITE_BUSY ("database is
+// locked") instead of waiting their turn — found by TestConcurrentWrites:
+//   - busy_timeout: wait up to 5s for a competing writer's lock.
+//   - _txlock=immediate: take the write lock at BEGIN. A deferred
+//     transaction that reads first and then writes can't be rescued by
+//     busy_timeout — SQLite fails the upgrade immediately to avoid a
+//     deadlock.
+//   - WAL: readers (Select, Authenticate) don't block on, or block,
+//     writers. Adds minioth.db-wal / minioth.db-shm beside the db file.
+const sqliteDSNParams = "?_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)&_txlock=immediate"
+
 /* "singleton" like db connection reference */
 func (m *DBHandler) getConn() (*sql.DB, error) {
 	db := m.db
 	var err error
 
 	if db == nil {
-		db, err = sql.Open("sqlite", m.DBpath)
+		db, err = sql.Open("sqlite", m.DBpath+sqliteDSNParams)
 		m.db = db
 		if err != nil {
 			log.Printf("Failed to connect to SQLite: %v", err)
@@ -445,6 +466,13 @@ func (m *DBHandler) Userdel(uid string) error {
 		return fmt.Errorf("user not found")
 	}
 
+	// uids get reused (nextIdTx is MAX+1), so without this the next user
+	// assigned this uid would accept the deleted user's unexpired tokens.
+	if err := m.RevokeTokens(uid); err != nil {
+		log.Printf("error, failed to revoke deleted user's tokens: %v", err)
+		return err
+	}
+
 	return nil
 }
 
@@ -548,6 +576,18 @@ func (m *DBHandler) Usermod(user domain.User) error {
 	return nil
 }
 
+// userPatchColumns are the only users columns Userpatch will write — the
+// same set PlainHandler's patchPasswdFields accepts. Keys are interpolated
+// into the UPDATE as column names, so anything else in fields (a typo, or
+// a crafted key like "info = (SELECT ...)") is skipped, never reaches SQL.
+var userPatchColumns = map[string]bool{
+	"info":           true,
+	"home":           true,
+	"shell":          true,
+	"email":          true,
+	"email_verified": true,
+}
+
 func (m *DBHandler) Userpatch(uid string, fields map[string]interface{}) error {
 	query := "UPDATE users SET "
 	args := []interface{}{}
@@ -573,6 +613,10 @@ func (m *DBHandler) Userpatch(uid string, fields map[string]interface{}) error {
 				password = s
 			}
 		default:
+			if !userPatchColumns[key] {
+				log.Printf("userpatch: ignoring unknown field %q", key)
+				continue
+			}
 			if value == "" {
 				continue
 			}
@@ -583,6 +627,19 @@ func (m *DBHandler) Userpatch(uid string, fields map[string]interface{}) error {
 
 	if len(args) == 0 && groupsField == "" && password == "" {
 		return fmt.Errorf("no inputs")
+	}
+
+	// Hash before storing, like Passwd and PlainHandler.Userpatch do —
+	// this used to write the plaintext straight into passwords.hashpass,
+	// which also left the user unable to log in (VerifyPass expects a
+	// bcrypt hash).
+	var hashPass []byte
+	if password != "" {
+		var err error
+		hashPass, err = domain.Hash([]byte(password))
+		if err != nil {
+			return fmt.Errorf("failed to hash password: %w", err)
+		}
 	}
 
 	db, err := m.getConn()
@@ -663,7 +720,7 @@ func (m *DBHandler) Userpatch(uid string, fields map[string]interface{}) error {
       WHERE
         uid = ?`
 
-		_, err = tx.Exec(pquery, password, time.Now(), uid)
+		_, err = tx.Exec(pquery, hashPass, time.Now().String(), uid)
 		if err != nil {
 			tx.Rollback()
 			return fmt.Errorf("failed to update password: %w", err)
@@ -978,6 +1035,35 @@ func (m *DBHandler) AssignGroup(uid string, gid int) error {
 	}
 
 	return nil
+}
+
+func (m *DBHandler) TokenVersion(uid string) (int, error) {
+	db, err := m.getConn()
+	if err != nil {
+		return 0, err
+	}
+
+	var version int
+	err = db.QueryRow("SELECT version FROM token_versions WHERE uid = ?", uid).Scan(&version)
+	if err == sql.ErrNoRows {
+		return 0, nil
+	}
+	return version, err
+}
+
+func (m *DBHandler) RevokeTokens(uid string) error {
+	db, err := m.getConn()
+	if err != nil {
+		return err
+	}
+
+	_, err = db.Exec(`
+    INSERT INTO
+      token_versions (uid, version)
+    VALUES
+      (?, 1)
+    ON CONFLICT(uid) DO UPDATE SET version = version + 1`, uid)
+	return err
 }
 
 func (m *DBHandler) Select(id string) []interface{} {

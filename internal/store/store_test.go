@@ -8,6 +8,14 @@ import (
 	"github.com/kyri56xcaesar/minioth/internal/domain"
 )
 
+// TestMain drops bcrypt's cost for the whole package: at the default
+// HASH_COST (16) each hash takes seconds, which made this suite take
+// ~90s (and time out under -race) while testing nothing cost-specific.
+func TestMain(m *testing.M) {
+	domain.HASH_COST = 4
+	os.Exit(m.Run())
+}
+
 // testRoot is the root user Init() seeds with in these tests — the
 // interface now takes a caller-supplied root (see the configurable root
 // credential feature), so every Init() call needs one.

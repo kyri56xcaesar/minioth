@@ -2,11 +2,16 @@ module github.com/kyri56xcaesar/minioth
 
 go 1.26.0
 
+// v1.0.0–v1.0.4 were tagged and later deleted from the repo; the module
+// proxy still lists them but can't resolve them.
+retract [v1.0.0, v1.0.4]
+
 require (
 	github.com/gin-gonic/gin v1.10.0
 	github.com/golang-jwt/jwt/v5 v5.2.1
 	github.com/joho/godotenv v1.5.1
 	golang.org/x/crypto v0.54.0
+	golang.org/x/time v0.16.0
 	modernc.org/sqlite v1.59.0
 )
 
@@ -41,7 +46,6 @@ require (
 	golang.org/x/net v0.57.0 // indirect
 	golang.org/x/sys v0.47.0 // indirect
 	golang.org/x/text v0.40.0 // indirect
-	golang.org/x/time v0.16.0 // indirect
 	google.golang.org/protobuf v1.35.1 // indirect
 	gopkg.in/check.v1 v1.0.0-20180628173108-788fd7840127 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect

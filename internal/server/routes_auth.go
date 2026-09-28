@@ -28,6 +28,8 @@ func registerAuthRoutes(rg *gin.RouterGroup, minioth *domain.Minioth, cfg *confi
 	rg.POST("/token/refresh", h.RefreshToken)
 	rg.GET("/user/token", h.TokenInfo)
 	rg.GET("/user/me", h.Me)
+	rg.PATCH("/user/me", h.UpdateMe)
+	rg.POST("/logout", h.Logout)
 	rg.POST("/passwd", limited, h.ChangePassword)
 
 	rg.POST("/verify-email/request", h.RequestEmailVerification)

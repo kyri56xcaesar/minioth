@@ -117,6 +117,10 @@ func NewMService(m *domain.Minioth, cfg *config.EnvConfig) MService {
 	// GinMode == "debug".
 	gin.SetMode(cfg.GinMode)
 
+	// Token parsing checks each token's generation against the store —
+	// this is what makes logout/revoke/password change actually bite.
+	auth.SetTokenVersionSource(m.TokenVersion)
+
 	return MService{
 		Minioth: m,
 		Engine:  gin.Default(),

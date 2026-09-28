@@ -29,4 +29,5 @@ func registerAdminRoutes(rg *gin.RouterGroup, minioth *domain.Minioth) {
 	rg.PUT("/groupmod", h.GroupMod)
 	rg.DELETE("/groupdel", h.GroupDel)
 	rg.POST("/promote", h.Promote)
+	rg.POST("/revoke", h.Revoke)
 }

@@ -178,10 +178,26 @@ func TestUserMe(t *testing.T) {
 func TestChangePassword(t *testing.T) {
 	h := newTestHarness(t)
 	h.registerUser(t, "hank", "hankpass123", "")
+	token := h.loginUser(t, "hank", "hankpass123")
 
-	rec := h.do(t, http.MethodPost, "/v1/passwd", gin.H{"username": "hank", "password": "hanknewpass456"}, nil)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("passwd change = %d, body %s", rec.Code, rec.Body.String())
+	change := func(headers map[string]string, current, next string) int {
+		t.Helper()
+		return h.do(t, http.MethodPost, "/v1/passwd", gin.H{"current_password": current, "new_password": next}, headers).Code
+	}
+
+	// No token at all: this endpoint used to accept a bare {username,
+	// password} and change anyone's password.
+	if rec := h.do(t, http.MethodPost, "/v1/passwd", gin.H{"username": "hank", "password": "hijacked123"}, nil); rec.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401 changing a password without a token, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if code := change(bearer(token), "wrong-current", "hanknewpass456"); code != http.StatusUnauthorized {
+		t.Fatalf("expected 401 with the wrong current password, got %d", code)
+	}
+	if code := change(bearer(token), "hankpass123", "short"); code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for a new password violating the policy, got %d", code)
+	}
+	if code := change(bearer(token), "hankpass123", "hanknewpass456"); code != http.StatusOK {
+		t.Fatalf("passwd change = %d", code)
 	}
 
 	// New password works, old one no longer does.
@@ -191,6 +207,24 @@ func TestChangePassword(t *testing.T) {
 	if rec := h.do(t, http.MethodPost, "/v1/login", gin.H{"username": "hank", "password": "hankpass123"}, nil); rec.Code == http.StatusOK {
 		t.Error("expected login with the old password to fail")
 	}
+
+	// The change revoked the token that made it.
+	if rec := h.do(t, http.MethodGet, "/v1/user/me", nil, bearer(token)); rec.Code == http.StatusOK {
+		t.Error("expected the pre-change access token to be revoked")
+	}
+}
+
+func TestChangePasswordOnlyAffectsCaller(t *testing.T) {
+	h := newTestHarness(t)
+	h.registerUser(t, "mallory", "mallorypass1", "")
+	token := h.loginUser(t, "mallory", "mallorypass1")
+
+	// A username in the body is ignored — the token decides whose password
+	// changes, so root's is untouched.
+	h.do(t, http.MethodPost, "/v1/passwd", gin.H{
+		"username": testRootUsername, "current_password": "mallorypass1", "new_password": "rootpwned123",
+	}, bearer(token))
+	h.rootToken(t) // fails the test if root's password changed
 }
 
 func TestEmailVerificationFlow(t *testing.T) {

@@ -40,7 +40,37 @@ var (
 	rsaPrivateKey *rsa.PrivateKey
 	rsaPublicKey  *rsa.PublicKey
 	jwtKeyID      string
+
+	// tokenVersionSource looks up a user's current token generation. nil
+	// (auth-package unit tests, which have no store) disables the check.
+	tokenVersionSource func(uid string) (int, error)
 )
+
+// SetTokenVersionSource wires revocation into token parsing: access,
+// refresh and password-reset tokens carry the user's token generation
+// ("ver") at issue time, and are rejected once source reports a different
+// one — i.e. after the user logged out, changed/reset their password, was
+// revoked by an admin, or was deleted. A generation counter rather than a
+// "revoked before" timestamp because iat only has one-second precision:
+// a timestamp cutoff can't tell a token issued just before a logout from
+// one issued just after it within the same second.
+func SetTokenVersionSource(source func(uid string) (int, error)) {
+	tokenVersionSource = source
+}
+
+func checkTokenVersion(uid string, ver int) error {
+	if tokenVersionSource == nil {
+		return nil
+	}
+	current, err := tokenVersionSource(uid)
+	if err != nil {
+		return fmt.Errorf("failed to look up token version: %w", err)
+	}
+	if ver != current {
+		return errors.New("token has been revoked")
+	}
+	return nil
+}
 
 /* JWT token signed claims.
 * what information the jwt will contain.
@@ -53,6 +83,9 @@ type CustomClaims struct {
 	// PGroup is the user's primary group id (the group named after them),
 	// e.g. the group new files belong to.
 	PGroup string `json:"pgroup,omitempty"`
+	// Ver is the user's token generation at issue time — see
+	// SetTokenVersionSource.
+	Ver int `json:"ver,omitempty"`
 	jwt.RegisteredClaims
 }
 
@@ -157,13 +190,14 @@ func signingKeyFor(alg string) (interface{}, error) {
 	}
 }
 
-func GenerateAccessJWT(userID, username, groups, gids, pgroup string) (string, error) {
+func GenerateAccessJWT(userID, username, groups, gids, pgroup string, version int) (string, error) {
 	claims := CustomClaims{
 		UserID:   userID,
 		Username: username,
 		Groups:   groups,
 		GroupIDS: gids,
 		PGroup:   pgroup,
+		Ver:      version,
 		RegisteredClaims: jwt.RegisteredClaims{
 			Issuer:    "minioth",
 			ExpiresAt: jwt.NewNumericDate(time.Now().Add(time.Hour * time.Duration(JWT_VALIDITY_HOURS))),
@@ -190,10 +224,11 @@ func GenerateAccessJWT(userID, username, groups, gids, pgroup string) (string, e
 	return tokenString, nil
 }
 
-func GenerateRefreshJWT(userID string) (string, error) {
+func GenerateRefreshJWT(userID string, version int) (string, error) {
 	claims := CustomClaims{
 		UserID: userID,
 		Groups: "not-needed",
+		Ver:    version,
 		RegisteredClaims: jwt.RegisteredClaims{
 			ExpiresAt: jwt.NewNumericDate(time.Now().Add(time.Hour * 72)), // Token expiration time (72 hours)
 			IssuedAt:  jwt.NewNumericDate(time.Now()),
@@ -230,6 +265,9 @@ func ParseAccessToken(tokenString string) (*CustomClaims, error) {
 	if !ok {
 		return nil, fmt.Errorf("invalid claims")
 	}
+	if err := checkTokenVersion(claims.UserID, claims.Ver); err != nil {
+		return nil, err
+	}
 
 	return claims, nil
 }
@@ -255,6 +293,9 @@ func ParseRefreshToken(tokenString string) (*CustomClaims, error) {
 	if !ok {
 		return nil, fmt.Errorf("invalid claims")
 	}
+	if err := checkTokenVersion(claims.UserID, claims.Ver); err != nil {
+		return nil, err
+	}
 
 	return claims, nil
 }
@@ -265,10 +306,11 @@ func ParseRefreshToken(tokenString string) (*CustomClaims, error) {
 * against the published JWKS) — the difference is the Purpose claim, which
 * ParsePurposeToken checks against the caller's expectation so a
 * verification token can't be replayed as a reset token or vice versa.
-* There's no persistent token storage: the JWT's own signature and
-* expiry *are* the validity check, same tradeoff refresh tokens already
-* make (see the README's refresh-token/revocation caveat — the same one
-* applies here). */
+* There's no persistent per-token storage: signature, expiry and — for
+* password reset — the user's token generation (see
+* SetTokenVersionSource) are the whole validity check. Email verification
+* tokens skip the generation check: they're already bound to the on-file
+* email, and a logout shouldn't void a pending verification link. */
 
 const (
 	PurposeVerifyEmail   = "verify_email"
@@ -282,14 +324,19 @@ type PurposeClaims struct {
 	// verified, so ParsePurposeToken's caller can confirm it still matches
 	// the user's current on-file address before marking it verified.
 	Extra string `json:"extra,omitempty"`
+	// Ver is the user's token generation — only set and checked for
+	// password reset, so a reset token is single-use (ResetPassword
+	// revokes it along with everything else) and dies with a logout.
+	Ver int `json:"ver,omitempty"`
 	jwt.RegisteredClaims
 }
 
-func generatePurposeJWT(userID, purpose, extra string, validity time.Duration) (string, error) {
+func generatePurposeJWT(userID, purpose, extra string, version int, validity time.Duration) (string, error) {
 	claims := PurposeClaims{
 		UserID:  userID,
 		Purpose: purpose,
 		Extra:   extra,
+		Ver:     version,
 		RegisteredClaims: jwt.RegisteredClaims{
 			Issuer:    "minioth",
 			Subject:   userID,
@@ -330,7 +377,7 @@ func parsePurposeJWT(tokenString, expectedPurpose string) (*PurposeClaims, error
 // userID's ownership of email — email is embedded so verification can
 // double-check it against whatever's on file at confirm time.
 func GenerateEmailVerificationToken(userID, email string) (string, error) {
-	return generatePurposeJWT(userID, PurposeVerifyEmail, email, 24*time.Hour)
+	return generatePurposeJWT(userID, PurposeVerifyEmail, email, 0, 24*time.Hour)
 }
 
 func ParseEmailVerificationToken(tokenString string) (*PurposeClaims, error) {
@@ -340,10 +387,17 @@ func ParseEmailVerificationToken(tokenString string) (*PurposeClaims, error) {
 // GeneratePasswordResetToken builds a 1-hour token — shorter-lived than
 // email verification, since a leaked reset token is directly usable to
 // take over the account, not just confirm an email address.
-func GeneratePasswordResetToken(userID string) (string, error) {
-	return generatePurposeJWT(userID, PurposePasswordReset, "", time.Hour)
+func GeneratePasswordResetToken(userID string, version int) (string, error) {
+	return generatePurposeJWT(userID, PurposePasswordReset, "", version, time.Hour)
 }
 
 func ParsePasswordResetToken(tokenString string) (*PurposeClaims, error) {
-	return parsePurposeJWT(tokenString, PurposePasswordReset)
+	claims, err := parsePurposeJWT(tokenString, PurposePasswordReset)
+	if err != nil {
+		return nil, err
+	}
+	if err := checkTokenVersion(claims.UserID, claims.Ver); err != nil {
+		return nil, err
+	}
+	return claims, nil
 }

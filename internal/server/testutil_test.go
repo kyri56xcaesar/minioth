@@ -82,6 +82,8 @@ func newTestHarness(t *testing.T, envOverrides ...map[string]string) *testHarnes
 
 	root := domain.User{Name: cfg.RootUsername, Password: domain.Password{Hashpass: cfg.RootPassword}}
 	m := domain.NewMinioth(root, &store.PlainHandler{})
+	auth.SetTokenVersionSource(m.TokenVersion)
+	t.Cleanup(func() { auth.SetTokenVersionSource(nil) })
 
 	gin.SetMode(cfg.GinMode) // matches NewMService — silences gin's debug route/warning dump
 	engine := gin.New()

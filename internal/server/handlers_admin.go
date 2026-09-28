@@ -363,3 +363,32 @@ func (h *AdminHandler) Promote(c *gin.Context) {
 	audit(c, "promote", body.Uid, fmt.Sprintf("success: gid=%d", body.Gid))
 	c.JSON(http.StatusOK, gin.H{"message": "user promoted successfully"})
 }
+
+// Revoke invalidates every token uid currently holds (access, refresh,
+// pending password reset) — e.g. for a compromised account. See
+// auth.SetTokenVersionSource.
+func (h *AdminHandler) Revoke(c *gin.Context) {
+	var body struct {
+		Uid string `json:"uid" binding:"required"`
+	}
+	if err := c.ShouldBindJSON(&body); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "uid is required"})
+		return
+	}
+
+	if _, ok := selectOneUser(h.Minioth, "users?uid="+body.Uid); !ok {
+		audit(c, "revoke", body.Uid, "failure: user not found")
+		c.JSON(http.StatusNotFound, gin.H{"error": "user not found"})
+		return
+	}
+
+	if err := h.Minioth.RevokeTokens(body.Uid); err != nil {
+		log.Printf("failed to revoke tokens: %v", err)
+		audit(c, "revoke", body.Uid, "failure: "+err.Error())
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to revoke tokens"})
+		return
+	}
+
+	audit(c, "revoke", body.Uid, "success")
+	c.JSON(http.StatusOK, gin.H{"message": "all tokens for user revoked"})
+}

@@ -345,17 +345,21 @@ func TestSetPlainDataDirRelocatesFiles(t *testing.T) {
 	// Restore the package-level paths afterward — they're process-global
 	// (see SetPlainDataDir's doc comment), so leaking a custom dir out of
 	// this test would break every test that runs after it.
-	origPasswd, origGroup, origShadow := MINIOTH_PASSWD, MINIOTH_GROUP, MINIOTH_SHADOW
+	origPasswd, origGroup, origShadow, origTokens := MINIOTH_PASSWD, MINIOTH_GROUP, MINIOTH_SHADOW, MINIOTH_TOKENS
 	t.Cleanup(func() {
-		MINIOTH_PASSWD, MINIOTH_GROUP, MINIOTH_SHADOW = origPasswd, origGroup, origShadow
+		MINIOTH_PASSWD, MINIOTH_GROUP, MINIOTH_SHADOW, MINIOTH_TOKENS = origPasswd, origGroup, origShadow, origTokens
 	})
 
 	SetPlainDataDir("custom/nested/plaindir")
 
 	h := &PlainHandler{}
 	h.Init(testRoot())
+	// mtokens is created lazily, on first revocation.
+	if err := h.RevokeTokens("0"); err != nil {
+		t.Fatalf("revoke failed: %v", err)
+	}
 
-	for _, path := range []string{MINIOTH_PASSWD, MINIOTH_GROUP, MINIOTH_SHADOW} {
+	for _, path := range []string{MINIOTH_PASSWD, MINIOTH_GROUP, MINIOTH_SHADOW, MINIOTH_TOKENS} {
 		if !strings.HasPrefix(path, "custom/nested/plaindir"+string(os.PathSeparator)) && !strings.HasPrefix(path, "custom/nested/plaindir/") {
 			t.Errorf("expected path under the custom data dir, got %q", path)
 		}

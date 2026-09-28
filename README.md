@@ -10,7 +10,7 @@ identity provider for other services — issuing JWTs, exposing a
 `/.well-known/openid-configuration` document, and a JWKS endpoint that
 publishes the live signing key — rather than being a full OIDC provider.
 
-Module path: `github.com/kyri56xcaesar/minioth` · Go 1.23.
+Module path: `github.com/kyri56xcaesar/minioth` · Go 1.26.
 
 ## What it does today
 
@@ -21,10 +21,22 @@ Module path: `github.com/kyri56xcaesar/minioth` · Go 1.23.
 - **Token lifecycle** — `POST /v1/token/refresh` mints a new access/refresh
   pair from a valid refresh token; `GET /v1/user/token` and `GET /v1/user/me`
   introspect the caller's token.
-- **Password change / reset** — `POST /v1/passwd` (authenticated change);
+- **Revocation** — every token carries the user's *token generation*
+  (`ver` claim), checked against the store on every use. `POST /v1/logout`
+  (bearer) and `POST /v1/admin/revoke` (`{"uid": "..."}`) bump it,
+  invalidating all of that user's access, refresh and pending
+  password-reset tokens at once — "log out everywhere"; there's no
+  per-session logout. Password change/reset and user deletion revoke too.
+  Persisted (`token_versions` table / `mtokens` file), so it survives
+  restarts.
+- **Self-service profile** — `PATCH /v1/user/me` (bearer) updates the
+  caller's own `email`, `info` and/or `shell`; changing the email resets
+  `email_verified`. Everything else stays admin-only (`/admin/userpatch`).
+- **Password change / reset** — `POST /v1/passwd` changes the caller's own
+  password: bearer access token plus `{"current_password", "new_password"}`.
   `POST /v1/passwd/reset-request` + `POST /v1/passwd/reset` (unauthenticated
-  reset via a short-lived signed token — see Known weaknesses for why this
-  is simulated rather than emailed).
+  reset via a short-lived, single-use signed token — see Known weaknesses
+  for why this is simulated rather than emailed).
 - **Email verification** — `POST /v1/verify-email/request` (authenticated,
   issues a signed 24h token for the caller's on-file email) + `GET
   /v1/verify-email?token=...` (confirms it). Simulated the same way as
@@ -35,7 +47,9 @@ Module path: `github.com/kyri56xcaesar/minioth` · Go 1.23.
   (`useradd`, `userdel`, `userpatch`, `usermod`, `groupadd`, `groupdel`,
   `grouppatch`, `groupmod`), `promote` (add a user to any group, gid 0
   "admin" by default — how an admin creates another admin), a
-  password-verify endpoint, and a raw bcrypt hash/verify utility endpoint.
+  password-verify endpoint, token revocation (`revoke`), and a raw bcrypt
+  hash/verify utility endpoint. Password hashes are never included in any
+  JSON response.
 - **Audit logging** — every privileged admin action logs a structured
   `[AUDIT] actor=... action=... target=... result=...` line (see Known
   weaknesses for why it's log lines rather than a queryable store).
@@ -79,20 +93,23 @@ it against the current layout.
 
 ## Storage backends
 
-- **SQLite (`DBHandler`, active by default)** — four tables (`users`,
-  `passwords`, `groups`, `user_groups`), created via
+- **SQLite (`DBHandler`, active by default)** — five tables (`users`,
+  `passwords`, `groups`, `user_groups`, `token_versions`), created via
   `CREATE TABLE IF NOT EXISTS` on startup, with `PRIMARY KEY`/`UNIQUE`
   constraints on `users.uid`/`username` and `groups.gid`/`groupname` (fresh
   databases only — see Known weaknesses). Root user and `admin`/`mod`/`user`
-  groups (gid 0/100/1000) are seeded automatically. Writes are serialized
-  through a package-level mutex, since SQLite locks at the database-file
-  level, not per-row. Driver is [`modernc.org/sqlite`](https://pkg.go.dev/modernc.org/sqlite)
+  groups (gid 0/100/1000) are seeded automatically. Id allocation is
+  serialized through a package-level mutex, and every connection runs in
+  WAL mode with a 5s `busy_timeout` and `BEGIN IMMEDIATE` transactions, so
+  concurrent writers wait their turn instead of failing with
+  `SQLITE_BUSY` (WAL adds `minioth.db-wal`/`-shm` files beside the db). Driver is [`modernc.org/sqlite`](https://pkg.go.dev/modernc.org/sqlite)
   (pure Go, no CGO) — this used to be DuckDB, a columnar OLAP engine that
   was the wrong shape for this workload (point lookups, tiny row-level
   CRUD) and dragged in Apache Arrow as a transitive dependency; SQLite is
   the right-sized embedded SQL engine for a tool this size.
 - **Plain files (`PlainHandler`, fully implemented)** — colon-delimited
-  files (`data/plain/mpasswd`, `mshadow`, `mgroup`), modeled after
+  files (`data/plain/mpasswd`, `mshadow`, `mgroup`, plus `mtokens` once
+  any token has been revoked), modeled after
   `/etc/passwd` + `/etc/shadow` + `/etc/group`. Every `MiniothHandler`
   method now does real work (previously several were no-op stubs and
   `Authenticate` returned `(nil, nil)` on success). It's a legitimate
