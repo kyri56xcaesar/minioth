@@ -553,8 +553,7 @@ func (m *PlainHandler) AssignGroup(uid string, gid int) error {
 
 /* this method is supposed to return eveyrhing from the given file */
 func (m *PlainHandler) TokenVersion(uid string) (int, error) {
-	plainWriteMu.RLock()
-	defer plainWriteMu.RUnlock()
+	defer lockPlain(false)()
 
 	versions, err := readTokenVersions()
 	if err != nil {
@@ -564,8 +563,7 @@ func (m *PlainHandler) TokenVersion(uid string) (int, error) {
 }
 
 func (m *PlainHandler) RevokeTokens(uid string) error {
-	plainWriteMu.Lock()
-	defer plainWriteMu.Unlock()
+	defer lockPlain(true)()
 
 	return bumpTokenVersion(uid)
 }

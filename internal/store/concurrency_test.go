@@ -188,7 +188,7 @@ func TestDBHandlerUserpatchHashesPasswordAndIgnoresUnknownColumns(t *testing.T) 
 	h.Init(testRoot())
 	defer h.Close()
 
-	uid, _, err := h.Useradd(domain.User{Name: "frank", Password: domain.Password{Hashpass: "hunter22"}})
+	uid, pgroup, err := h.Useradd(domain.User{Name: "frank", Password: domain.Password{Hashpass: "hunter22"}})
 	if err != nil {
 		t.Fatalf("useradd failed: %v", err)
 	}
@@ -215,7 +215,9 @@ func TestDBHandlerUserpatchHashesPasswordAndIgnoresUnknownColumns(t *testing.T) 
 		t.Fatalf("userpatch failed: %v", err)
 	}
 	got := h.Select("users?uid=" + uidStr)[0].(domain.User)
-	if got.Name != "frank" || got.Info != "legit" || got.Pgroup != uid {
+	// the "pgroup": 0 key must not reach SQL: the primary group stays the
+	// user's own group (its gid, which need not equal the uid)
+	if got.Name != "frank" || got.Info != "legit" || got.Pgroup != pgroup {
 		t.Errorf("unknown columns reached SQL: %+v", got)
 	}
 }
