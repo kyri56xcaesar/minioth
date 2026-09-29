@@ -5,7 +5,7 @@ All notable changes to minioth. Versions follow
 under `internal/`, so there's no importable Go API to version. The
 rationale behind each fix lives in [BACKLOG.md](BACKLOG.md).
 
-## [Unreleased]
+## [v1.1.2] — 2026-09-29
 
 ### Added
 - `GET /v1/.well-known/ready`: 200 while the store can serve requests (the
