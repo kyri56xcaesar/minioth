@@ -2,6 +2,9 @@ package server
 
 import (
 	"net/http"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -59,5 +62,28 @@ func TestJWKSEmptyForHS256(t *testing.T) {
 	// live JWKS must advertise an empty key set for it (see internal/auth).
 	if len(resp.Keys) != 0 {
 		t.Errorf("expected an empty key set for HS256, got %d keys", len(resp.Keys))
+	}
+}
+
+// Readiness reflects the store; liveness stays up regardless.
+func TestReadiness(t *testing.T) {
+	h := newTestHarness(t)
+	if rec := h.do(t, http.MethodGet, "/v1/.well-known/ready", nil, nil); rec.Code != http.StatusOK {
+		t.Fatalf("ready = %d, body %s", rec.Code, rec.Body.String())
+	}
+
+	// the harness runs the plain store in a temp working directory
+	if err := os.Remove(filepath.Join("data", "plain", "mpasswd")); err != nil {
+		t.Fatal(err)
+	}
+	rec := h.do(t, http.MethodGet, "/v1/.well-known/ready", nil, nil)
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Errorf("ready without mpasswd = %d, want 503", rec.Code)
+	}
+	if strings.Contains(rec.Body.String(), "mpasswd") {
+		t.Errorf("the reason (with its path) leaked: %s", rec.Body.String())
+	}
+	if rec := h.do(t, http.MethodGet, "/v1/.well-known/minioth", nil, nil); rec.Code != http.StatusOK {
+		t.Errorf("liveness = %d, want 200 while not ready", rec.Code)
 	}
 }

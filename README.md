@@ -54,6 +54,7 @@ Module path: `github.com/kyri56xcaesar/minioth` · Go 1.26.
   `[AUDIT] actor=... action=... target=... result=...` line (see Known
   weaknesses for why it's log lines rather than a queryable store).
 - **Well-known endpoints** — `/v1/.well-known/minioth` (liveness),
+  `/v1/.well-known/ready` (readiness: 503 while the store can't serve),
   `/v1/.well-known/openid-configuration`, `/v1/.well-known/jwks.json`
   (derived live from whichever signing key is actually loaded — see
   Known weaknesses).

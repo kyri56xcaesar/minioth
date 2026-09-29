@@ -9,17 +9,20 @@ package server
 
 import (
 	"fmt"
+	"log"
 	"net/http"
 
 	"github.com/gin-gonic/gin"
 
 	"github.com/kyri56xcaesar/minioth/internal/auth"
 	"github.com/kyri56xcaesar/minioth/internal/config"
+	"github.com/kyri56xcaesar/minioth/internal/domain"
 )
 
 // WellKnownHandler holds the service-discovery routes' dependencies.
 type WellKnownHandler struct {
 	Config *config.EnvConfig
+	Store  *domain.Minioth
 }
 
 func (h *WellKnownHandler) Liveness(c *gin.Context) {
@@ -27,6 +30,19 @@ func (h *WellKnownHandler) Liveness(c *gin.Context) {
 		"version": "0.0.1",
 		"status":  "alive",
 	})
+}
+
+// Readiness answers 200 only while the store can serve requests (Liveness
+// only shows the process is up). The reason is logged, not returned: it can
+// hold file paths.
+func (h *WellKnownHandler) Readiness(c *gin.Context) {
+	if err := h.Store.Ready(); err != nil {
+		log.Printf("[ready] not ready: %v", err)
+		c.JSON(http.StatusServiceUnavailable, gin.H{"status": "unavailable"})
+
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"status": "ready"})
 }
 
 func (h *WellKnownHandler) OpenIDConfiguration(c *gin.Context) {

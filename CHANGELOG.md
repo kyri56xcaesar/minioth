@@ -5,6 +5,27 @@ All notable changes to minioth. Versions follow
 under `internal/`, so there's no importable Go API to version. The
 rationale behind each fix lives in [BACKLOG.md](BACKLOG.md).
 
+## [Unreleased]
+
+### Added
+- `GET /v1/.well-known/ready`: 200 while the store can serve requests (the
+  database answers a query; the plain files are readable and their
+  directory writable), 503 otherwise. `/v1/.well-known/minioth` stays the
+  liveness check.
+
+### Fixed
+- Users are stored with their real primary group. `Useradd` recorded
+  `pgroup = uid`, but the user's own group gets its own gid, which differs
+  from the uid once that gid is taken, so `/admin/users` reported the wrong
+  primary group. Users stored that way are repaired at start (SQLite).
+- Plain-file store: rewrites are atomic (a synced temp file renamed over the
+  original; a reader could see a half-written or empty file), a file lock
+  serializes separate minioth processes on the same directory, every write
+  is checked, `Useradd` writes `mpasswd` (which makes the user exist) last,
+  and a line a crash left unfinished is terminated before the next append.
+  Values containing `:` or line breaks are refused.
+- Token versions (plain store) take the same file lock as every other write.
+
 ## [v1.1.1] — 2026-09-28
 
 ### Changed

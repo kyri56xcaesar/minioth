@@ -6,7 +6,9 @@ package store
 * */
 
 import (
+	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"log"
 	"os"
@@ -1261,6 +1263,26 @@ func (m *DBHandler) Authenticate(username, password string) (*domain.User, error
 }
 
 /* close the prev "singleton" db connection */
+// Ready runs a query against the users table: an open connection alone
+// doesn't show the schema is there or the file readable.
+func (m *DBHandler) Ready() error {
+	db, err := m.getConn()
+	if err != nil {
+		return err
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	var n int
+	if err := db.QueryRowContext(ctx, "SELECT count(*) FROM users WHERE uid = 0").Scan(&n); err != nil {
+		return fmt.Errorf("database: %w", err)
+	}
+	if n != 1 {
+		return errors.New("database: no root user")
+	}
+
+	return nil
+}
+
 func (m *DBHandler) Close() {
 	if m.db != nil {
 		m.db.Close()

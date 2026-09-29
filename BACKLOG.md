@@ -421,6 +421,30 @@ All six done on 2026-09-28 (see `CHANGELOG.md`, v1.1.0).
   email_verified), matching what the plain backend's `patchPasswdFields`
   accepts. Unknown keys are logged and skipped.
 
+- **[fixed] Wrong primary group stored.** `DBHandler.Useradd` recorded
+  `pgroup = uid` before creating the user's own group, which gets its own
+  gid: the two differ once that gid is taken (uid 1032, group 1033), and
+  `/admin/users` then reported a primary group the user wasn't in. Tokens
+  looked the group up by name, so only the stored value was wrong. It is
+  now the gid of the group actually created; `Init` repairs rows stored
+  the old way. Found by kuspace's smoke test (group volumes).
+- **[fixed] Plain-file store durability.** `rewriteFile` truncated in place
+  (`os.Create`), so a concurrent reader or a crash could leave a half-written
+  or empty file; the mutex only covered one process; writes were unchecked,
+  so `Useradd` could leave a user half-created; a crash mid-line glued the
+  next append onto it; values with `:` or newlines split records. Rewrites
+  now go to a synced temp file renamed over the original, a lock file
+  (`flock` where available) serializes processes, `mpasswd` is written last
+  and every write checked, appends terminate an unfinished line first, and
+  such values are refused. `TokenVersion`/`RevokeTokens` take the same
+  lock.
+- **[fixed] No readiness check.** `/v1/.well-known/minioth` answers "alive"
+  whatever the store's state, and was all a dependent service could probe.
+  `GET /v1/.well-known/ready` asks the store (`MiniothHandler.Ready`: a
+  query on SQLite, readable files and a writable directory on the plain
+  backend) and answers 503 when it can't serve; the reason is logged, not
+  returned (it can hold paths).
+
 ### Bigger scope calls (only if minioth's purpose changes)
 
 - **Schema migrations.** Discussed directly, no decision made.
@@ -435,8 +459,8 @@ All six done on 2026-09-28 (see `CHANGELOG.md`, v1.1.0).
 - **Structured/leveled logging and request correlation IDs.** Today
   it's bare `log.Printf` everywhere, no severity levels, nothing to
   correlate a request across log lines.
-- **Metrics/observability endpoint**, and a real readiness check
-  distinct from `/v1/.well-known/minioth`'s static "alive" liveness stub.
+- **Metrics/observability endpoint.** (The readiness half of this item is
+  done: see "Found while doing the above".)
 - **Backup/replication story for the SQLite file.** Single file, single
   process, no HA.
 - **Distributed rate limiting.** `internal/auth`'s `RateLimitMiddleware`

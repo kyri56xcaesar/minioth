@@ -90,6 +90,11 @@ type MiniothHandler interface {
 
 	Authenticate(username, password string) (*User, error)
 
+	// Ready reports whether the store can serve requests now: the
+	// database answers a query, or the flat files are readable and their
+	// directory writable. Behind GET /v1/.well-known/ready.
+	Ready() error
+
 	Close()
 }
 
@@ -174,6 +179,10 @@ func (m *Minioth) Select(id string) []interface{} {
 
 func (m *Minioth) Authenticate(username, password string) (*User, error) {
 	return m.handler.Authenticate(username, password)
+}
+
+func (m *Minioth) Ready() error {
+	return m.handler.Ready()
 }
 
 func (m *Minioth) Close() {

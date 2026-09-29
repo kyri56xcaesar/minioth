@@ -731,6 +731,25 @@ func (m *PlainHandler) Authenticate(username, password string) (*domain.User, er
 	return user, nil
 }
 
+// Ready checks that the three files can be read and that their directory
+// takes new files (every write is a temp file renamed over the original).
+func (p *PlainHandler) Ready() error {
+	for _, f := range []string{MINIOTH_PASSWD, MINIOTH_SHADOW, MINIOTH_GROUP} {
+		fh, err := os.Open(f)
+		if err != nil {
+			return fmt.Errorf("plain store: %w", err)
+		}
+		_ = fh.Close()
+	}
+	tmp, err := os.CreateTemp(filepath.Dir(MINIOTH_PASSWD), ".ready-*")
+	if err != nil {
+		return fmt.Errorf("plain store: directory not writable: %w", err)
+	}
+	_ = tmp.Close()
+
+	return os.Remove(tmp.Name())
+}
+
 func (p *PlainHandler) Close() {
 }
 
